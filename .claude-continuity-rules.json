@@ -7,6 +7,13 @@
    "source_client": "code",
    "checkpoint": "reducir-friccion-reinicio",
    "created": "2026-07-23 19:16"
+  },
+  {
+   "id": 2,
+   "text": "Puente con Claude Design (que NO tiene el MCP): se usa Google Drive como buzon. Un cliente con el MCP (Cowork o Code) lee la orden del inbox y escribe un doc en Drive llamado 'INBOX-DESIGN-order-<N>' con el brief+checkpoint. Design lo lee por su conector de Drive, ejecuta, y deja el resultado en un doc 'INBOX-DESIGN-order-<N>-RESULT' con la URL del artifact publicado. El cliente con MCP lee ese RESULT y cierra la orden con router_inbox complete. Design nunca toca el inbox local; el loop de vuelta es semi-manual.",
+   "source_client": "unknown",
+   "checkpoint": null,
+   "created": "2026-07-24 14:17"
   }
  ]
 }
