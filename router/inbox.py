@@ -49,6 +49,7 @@ class Inbox:
                 checkpoint TEXT,
                 assets TEXT,
                 result_assets TEXT,
+                completed_by TEXT,
                 status TEXT NOT NULL DEFAULT 'pending',
                 result TEXT,
                 created_at REAL NOT NULL,
@@ -67,7 +68,7 @@ class Inbox:
     def _migrate(self) -> None:
         """Agrega columnas nuevas a DBs viejas sin romperlas (ALTER idempotente)."""
         cols = {row[1] for row in self._db.execute("PRAGMA table_info(inbox)").fetchall()}
-        for col in ("assets", "result_assets"):
+        for col in ("assets", "result_assets", "completed_by"):
             if col not in cols:
                 try:
                     self._db.execute(f"ALTER TABLE inbox ADD COLUMN {col} TEXT")
@@ -148,43 +149,59 @@ class Inbox:
         """Órdenes pendientes para un cliente (incluye las dirigidas a 'any')."""
         if to_client:
             rows = self._db.execute(
-                "SELECT id, to_client, from_client, message, checkpoint, assets, created_at FROM inbox "
+                "SELECT id, to_client, from_client, message, checkpoint, assets, completed_by, created_at FROM inbox "
                 "WHERE status='pending' AND (to_client=? OR to_client='any') ORDER BY created_at",
                 (to_client.lower().strip(),),
             ).fetchall()
         else:
             rows = self._db.execute(
-                "SELECT id, to_client, from_client, message, checkpoint, assets, created_at FROM inbox "
+                "SELECT id, to_client, from_client, message, checkpoint, assets, completed_by, created_at FROM inbox "
                 "WHERE status='pending' ORDER BY created_at"
             ).fetchall()
         return [
             {"id": r[0], "to": r[1], "from": r[2], "message": r[3], "checkpoint": r[4],
-             "assets": self._load_assets(r[5]),
-             "created": time.strftime("%Y-%m-%d %H:%M", time.localtime(r[6]))}
+             "assets": self._load_assets(r[5]), "completed_by": r[6],
+             "created": time.strftime("%Y-%m-%d %H:%M", time.localtime(r[7]))}
             for r in rows
         ]
 
-    def complete(self, order_id: int, result: str | None = None, assets=None) -> bool:
+    def complete(self, order_id: int, result: str | None = None, assets=None,
+                 completed_by: str | None = None) -> bool:
+        """
+        completed_by: quién EJECUTÓ la orden — independiente de to_client (para
+        quién era). No son lo mismo: una orden con to_client='design' puede
+        terminar completada por un cliente distinto de Claude Design (ej. Code
+        haciendo de puente). Sin este campo ese desvío queda invisible. Si no
+        se pasa, queda NULL (backward-compat — no rompe llamadas viejas).
+        """
+        by = completed_by.lower().strip() if completed_by else None
         cur = self._db.execute(
-            "UPDATE inbox SET status='done', result=?, result_assets=?, done_at=? "
+            "UPDATE inbox SET status='done', result=?, result_assets=?, completed_by=?, done_at=? "
             "WHERE id=? AND status='pending'",
-            (result, self._dump_assets(assets), time.time(), order_id),
+            (result, self._dump_assets(assets), by, time.time(), order_id),
         )
         self._db.commit()
         return cur.rowcount > 0
 
     def history(self, limit: int = 10) -> list[dict]:
         rows = self._db.execute(
-            "SELECT id, to_client, from_client, message, result, result_assets, done_at FROM inbox "
+            "SELECT id, to_client, from_client, message, result, result_assets, completed_by, done_at FROM inbox "
             "WHERE status='done' ORDER BY done_at DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [
-            {"id": r[0], "to": r[1], "from": r[2], "message": r[3], "result": r[4],
-             "result_assets": self._load_assets(r[5]),
-             "done": time.strftime("%Y-%m-%d %H:%M", time.localtime(r[6])) if r[6] else None}
-            for r in rows
-        ]
+        out = []
+        for r in rows:
+            to_client, completed_by = r[1], r[6]
+            entry = {
+                "id": r[0], "to": to_client, "from": r[2], "message": r[3], "result": r[4],
+                "result_assets": self._load_assets(r[5]), "completed_by": completed_by,
+                "done": time.strftime("%Y-%m-%d %H:%M", time.localtime(r[7])) if r[7] else None,
+            }
+            # Visibiliza el caso #17: orden dirigida a X, ejecutada por Y.
+            if completed_by and to_client != "any" and completed_by != to_client:
+                entry["executed_by_different_client"] = True
+            out.append(entry)
+        return out
 
     def close(self) -> None:
         self._db.close()

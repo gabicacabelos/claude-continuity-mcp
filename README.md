@@ -133,6 +133,8 @@ inbox(action="history")  → result + result_assets
 
 And the other way around: Claude Design can leave `code` an order with the final export for implementation. The inbox is bidirectional between all clients.
 
+**Traceability (`completed_by`):** `to` records who an order was **for**; `completed_by` (passed to `action="complete"` as `by`) records who actually **executed** it — and they can differ. If an order addressed to `design` gets executed by a client bridging on its behalf instead of the real Claude Design product, `completed_by` makes that visible instead of silently blending into "done". `history()` flags it explicitly with `executed_by_different_client: true` when the two don't match.
+
 ### `router_status` — Honest session metrics
 
 *In short: check how much this is actually saving you — real numbers, no marketing.*

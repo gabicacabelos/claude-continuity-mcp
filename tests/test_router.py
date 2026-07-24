@@ -529,6 +529,124 @@ def test_inbox_find_pending_duplicate_returns_none_when_no_match(inbox):
     assert inbox.find_pending_duplicate("design", "algo") is None  # destino distinto, no matchea
 
 
+# ─── inbox: completed_by — trazabilidad de quién ejecutó vs para quién era ────
+
+def test_inbox_complete_records_completed_by(inbox):
+    oid = inbox.send("hacer el hero", to_client="design")
+    assert inbox.complete(oid, result="listo", completed_by="code") is True
+
+    hist = inbox.history()
+    assert hist[0]["completed_by"] == "code"
+
+
+def test_inbox_complete_without_completed_by_stays_null(inbox):
+    oid = inbox.send("tarea sin firmar", to_client="code")
+    assert inbox.complete(oid, result="hecho") is True  # sin completed_by, no rompe
+
+    hist = inbox.history()
+    assert hist[0]["completed_by"] is None
+
+
+def test_inbox_completed_by_normalizes_case_and_space(inbox):
+    oid = inbox.send("otra tarea", to_client="code")
+    inbox.complete(oid, completed_by="  Code  ")
+    assert inbox.history()[0]["completed_by"] == "code"
+
+
+def test_inbox_check_exposes_completed_by_field(inbox):
+    inbox.send("pendiente", to_client="code")
+    pending = inbox.check("code")
+    assert "completed_by" in pending[0]
+    assert pending[0]["completed_by"] is None  # aún no completada
+
+
+def test_inbox_history_flags_when_executed_by_different_client(inbox):
+    # El caso real de la orden #17: to_client='design', pero la ejecutó 'code'.
+    oid = inbox.send("hacer el hero de la landing", to_client="design", from_client="cowork")
+    inbox.complete(oid, result="mockup listo", completed_by="code")
+
+    hist = inbox.history()
+    assert hist[0]["to"] == "design"
+    assert hist[0]["completed_by"] == "code"
+    assert hist[0].get("executed_by_different_client") is True
+
+
+def test_inbox_history_no_flag_when_same_client_completes(inbox):
+    oid = inbox.send("migrar tests", to_client="code")
+    inbox.complete(oid, result="34/34 verdes", completed_by="code")
+
+    hist = inbox.history()
+    assert "executed_by_different_client" not in hist[0]
+
+
+def test_inbox_history_no_flag_when_to_client_is_any(inbox):
+    # 'any' no tiene un destinatario específico — no cuenta como desvío
+    oid = inbox.send("orden abierta", to_client="any")
+    inbox.complete(oid, completed_by="desktop")
+
+    hist = inbox.history()
+    assert "executed_by_different_client" not in hist[0]
+
+
+def test_inbox_migration_adds_completed_by_to_legacy_db(tmp_path):
+    # DB "vieja" sin la columna completed_by → el __init__ debe migrarla sin romper
+    import sqlite3
+    dbp = str(tmp_path / "legacy_completed_by.db")
+    con = sqlite3.connect(dbp)
+    con.execute("""
+        CREATE TABLE inbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            to_client TEXT NOT NULL DEFAULT 'any',
+            from_client TEXT NOT NULL DEFAULT 'unknown',
+            message TEXT NOT NULL,
+            checkpoint TEXT,
+            assets TEXT,
+            result_assets TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            result TEXT,
+            created_at REAL NOT NULL,
+            done_at REAL
+        )
+    """)
+    con.execute("INSERT INTO inbox (message, created_at) VALUES ('orden vieja', ?)",
+                (1_700_000_000.0,))
+    con.commit(); con.close()
+
+    ib = Inbox(dbp)  # dispara _migrate
+    try:
+        cols = {r[1] for r in ib._db.execute("PRAGMA table_info(inbox)").fetchall()}
+        assert "completed_by" in cols
+        # la orden vieja sigue operable con el nuevo parámetro
+        pend = ib.check()
+        oid = pend[0]["id"]
+        assert ib.complete(oid, completed_by="design") is True
+        assert ib.history()[0]["completed_by"] == "design"
+    finally:
+        ib.close()
+
+
+# ─── server: router_inbox action=complete expone `by` end-to-end ─────────────
+
+def _inbox_tool(server_module, **kw) -> dict:
+    params = server_module.InboxInput(**kw)
+    return json.loads(asyncio.run(server_module.router_inbox(params)))
+
+
+def test_router_inbox_complete_passes_by_through(server_module, tmp_path, monkeypatch):
+    ib = Inbox(str(tmp_path / "ib.db"))
+    monkeypatch.setattr(server_module, "inbox", ib)
+
+    sent = _inbox_tool(server_module, action="send", message="tarea puente", to="design")
+    oid = sent["id"]
+    _inbox_tool(server_module, action="complete", order_id=oid, result="ok", by="code")
+
+    hist = ib.history()
+    assert hist[0]["completed_by"] == "code"
+    assert hist[0]["to"] == "design"
+    assert hist[0]["executed_by_different_client"] is True
+    ib.close()
+
+
 # ─── server: detección de código desactualizado en el proceso vivo ────────────
 # Un proceso MCP no recarga módulos solo: si server.py/router/*.py cambian en
 # disco después del arranque, sigue corriendo la versión vieja hasta reiniciar.

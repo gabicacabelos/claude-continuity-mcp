@@ -105,7 +105,7 @@ _stats = {
     "diff_reads": 0,
 }
 
-VERSION = "3.3.0"
+VERSION = "3.3.1"
 
 # Umbral: archivos por debajo se devuelven enteros (el overhead de RAG no rinde)
 FULL_RETURN_MAX_TOKENS = 1500
@@ -201,7 +201,7 @@ def _ledger_safe_record(key: str, content: str, tokens: int, outline: list[str] 
 INSTRUCTIONS = """Memoria y continuidad para Claude entre sesiones y clientes — 100% local, sin API keys. Usala PROACTIVAMENTE para proteger tu ventana de contexto y no re-explorar trabajo previo:
 1. router_smart_read: para leer un archivo grande (>15KB) o buscar algo puntual en cualquier archivo, pasá `query` con lo que buscás — devuelve solo los fragmentos exactos relevantes con números de línea (ranking local, sin pérdida). Sin `query` devuelve el mapa estructural. MEMORIA: si el archivo ya fue leído en una sesión anterior y no cambió, devuelve solo el outline (~50 tokens); si cambió, devuelve SOLO el diff. Usá `force_full=true` si necesitás el contenido completo igual.
 2. router_checkpoint: al cerrar una tarea larga o cuando el contexto se está llenando, guardá un checkpoint (action=save) con resumen, decisiones y pendientes. Al arrancar una sesión sobre trabajo previo, action=resume lo restaura en ~300 tokens e indica qué archivos cambiaron desde entonces.
-3. router_inbox: buzón de órdenes entre clientes (Cowork/Code/Desktop/Design). Si el usuario dice "dejale esta tarea a Claude Code", "pasale el diseño a Claude Design", "que Design haga el mockup" o similar: action=send con la orden, un checkpoint vinculado y `assets` (rutas/URLs de brief, wireframe, export .fig/.png) para el handoff código↔diseño. AL INICIO de sesiones de trabajo, chequeá órdenes pendientes con action=check; al ejecutarlas marcá complete con el resultado (y `assets` devueltos si generaste algo, ej. el export de un mockup).
+3. router_inbox: buzón de órdenes entre clientes (Cowork/Code/Desktop/Design). Si el usuario dice "dejale esta tarea a Claude Code", "pasale el diseño a Claude Design", "que Design haga el mockup" o similar: action=send con la orden, un checkpoint vinculado y `assets` (rutas/URLs de brief, wireframe, export .fig/.png) para el handoff código↔diseño. AL INICIO de sesiones de trabajo, chequeá órdenes pendientes con action=check; al ejecutarlas marcá complete con `by=<tu propia identidad: cowork/code/desktop/design>` y el resultado (y `assets` devueltos si generaste algo, ej. el export de un mockup). Pasá `by` siempre — es quién ejecutó, distinto de a quién iba dirigida la orden, y sin eso ese desvío queda invisible.
 4. router_status: métricas de la sesión (tokens que no entraron al contexto, lecturas, checkpoints, inbox).
 5. router_project_search: buscá en TODO el proyecto cuando NO sabés en qué archivo está lo que buscás ("¿dónde se validan los webhooks?"). Índice BM25 local e incremental — devuelve los archivos más relevantes con fragmentos exactos. Preferilo sobre grep cuando la búsqueda es conceptual y no una cadena literal; usá router_smart_read si ya sabés el archivo.
 6. router_rules: reglas PERMANENTES del proyecto ("nunca usar Redux", "los tests van en tests/"), distintas del estado de tarea de un checkpoint. Guardá una con action=add cuando el usuario fije una convención durable, o promové una decisión de un checkpoint con action=promote. Viven en .claude-continuity-rules.json en la raíz del proyecto (git-friendly). NO hace falta leerlas: se inyectan solas como `project_rules` en smart_read/resume. sync_to_claudemd=true además las escribe en el CLAUDE.md.
@@ -273,6 +273,10 @@ class InboxInput(BaseModel):
     )
     order_id: Optional[int] = Field(default=None, description="[complete] ID de la orden a marcar como hecha")
     result: Optional[str] = Field(default=None, description="[complete] Resultado/resumen de lo ejecutado, visible para quien dejó la orden")
+    by: Optional[str] = Field(
+        default=None,
+        description="[complete] Quién EJECUTÓ la orden: 'cowork', 'code', 'desktop' o 'design'. Independiente de `to` (para quién era) — pasalo siempre para que quede trazable quién hizo el trabajo, sobre todo si no coincide con el destinatario original.",
+    )
 
 
 class RulesInput(BaseModel):
@@ -733,7 +737,8 @@ async def router_inbox(params: InboxInput) -> str:
         if params.action == "complete":
             if not params.order_id:
                 return _j({"status": "error", "reason": "complete requiere `order_id`"})
-            ok = inbox.complete(params.order_id, result=params.result, assets=params.assets)
+            ok = inbox.complete(params.order_id, result=params.result, assets=params.assets,
+                               completed_by=params.by)
             if not ok:
                 return _j({"status": "error", "reason": f"orden {params.order_id} no existe o ya estaba completada"})
             return _j({"status": "completed", "id": params.order_id, "result_assets": params.assets or []})
@@ -1033,8 +1038,9 @@ def prompt_inbox() -> str:
         "router_checkpoint action='resume' name=<checkpoint> para el contexto completo; revisá los assets si trae.\n"
         "3. Ejecutá lo pedido. Ante acciones difíciles de revertir (push, borrar, publicar), verificá el "
         "estado real antes y reportá con evidencia.\n"
-        "4. Al terminar cada orden, marcala con router_inbox action='complete', order_id y un result "
-        "detallado (hashes, conteos, rutas). Si generaste archivos, devolvelos en assets.\n"
+        "4. Al terminar cada orden, marcala con router_inbox action='complete', order_id, by=<tu propia identidad: "
+        "cowork/code/desktop/design> y un result detallado (hashes, conteos, rutas). Si generaste archivos, "
+        "devolvelos en assets. Pasá `by` SIEMPRE, sobre todo si no coincide con el destinatario original de la orden.\n"
         "5. Cerrá con un resumen al usuario y verificá que el inbox quede sin pendientes."
     )
 
