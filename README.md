@@ -2,7 +2,7 @@
 
 **Claude remembers a conversation. This MCP remembers a project.**
 
-An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local, deterministic, no API keys.
+An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, and — bridged, see below — Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local and deterministic at its core, no API keys — the one exception is the Design bridge, which needs Google Drive since Design has no local access.
 
 ## What this actually does (in plain English)
 
@@ -111,7 +111,7 @@ inbox(action="history")  → you see the result
 
 Claude chats can't command each other in real time — but they share this disk. The inbox is the async mailbox: you leave an order from one client (linked to a checkpoint so the receiver has the full context of what was being worked on), the other picks it up on startup, executes it, and reports the result. Tell Cowork *"leave this task for Claude Code"* and that's it — the server's `instructions` make each client check its inbox when starting work.
 
-**Pack clients:** `cowork`, `code`, `desktop`, and `design` (Claude Design). Any of them can give orders to any other — the destination is free text, so you can also invent your own roles. For a client to receive orders it only needs to have this MCP loaded and check its inbox with `action="check"`.
+**Pack clients:** `cowork`, `code`, and `desktop` load this MCP directly — for any of them to receive orders, they just need it loaded and to check their inbox with `action="check"`. **`design` (Claude Design) is different and needs a caveat:** it's a cloud-hosted product with no access to your local filesystem, so it *cannot* load this MCP or call `action="check"` itself — despite `design` being a valid destination/origin value. Orders addressed to `design` have to be bridged by a client that does have the MCP (see below). The destination field is free text either way, so you can also invent your own roles for anything else you connect.
 
 **Code ↔ design handoff (`assets`):** orders and results can carry `assets` — a list of file paths or URLs (brief, wireframe, `.fig`/`.png` export, specs). That way the back-and-forth between development and design travels with the material, not just the text:
 
@@ -122,8 +122,14 @@ inbox(action="send", to="design", from_client="code",
       checkpoint="landing-v2",
       assets=["/proj/brief.md", "https://.../wireframe.png"])
 
-# Claude Design, on startup, sees the order + the brief + the wireframe:
-inbox(action="check", to="design")
+# Claude Design can't check this inbox itself. A client that HAS the MCP
+# (Code or Cowork) relays the order into a shared Google Drive doc that
+# Design's own Drive connector can read (see "Bridging Claude Design" below):
+inbox(action="check", to="design")  → run by Code/Cowork, not by Design
+
+# Claude Design reads the brief from Drive, builds the mockup, and drops
+# the result as a Drive doc. The bridging client picks that up and closes
+# the loop:
 inbox(action="complete", order_id=7, result="mockup ready, 2 variants",
       assets=["https://figma.com/.../hero", "/exports/hero-v1.png"])
 
@@ -131,7 +137,9 @@ inbox(action="complete", order_id=7, result="mockup ready, 2 variants",
 inbox(action="history")  → result + result_assets
 ```
 
-And the other way around: Claude Design can leave `code` an order with the final export for implementation. The inbox is bidirectional between all clients.
+The inbox is bidirectional between `cowork`, `code`, and `desktop` natively. With `design`, it's bidirectional in effect but bridged — never direct.
+
+**Bridging Claude Design (Google Drive as mailbox):** since Design can't reach your disk, a client that already has the MCP (Cowork or Code) writes the order as a Google Drive doc named `INBOX-DESIGN-order-<N>` (brief + linked checkpoint). Design — which does have a Google Drive connector — reads it from there, builds, and leaves the result as `INBOX-DESIGN-order-<N>-RESULT` with the published artifact URL. The bridging client reads that doc and closes the loop with `router_inbox complete`. It's semi-manual (someone has to trigger each hop) and it's the one part of this project that isn't 100% local — Drive is the intermediary precisely because Design has no other channel in. This convention is saved as a permanent project rule (`router_rules`), so any client resuming this project sees it without being told again.
 
 **Traceability (`completed_by`):** `to` records who an order was **for**; `completed_by` (passed to `action="complete"` as `by`) records who actually **executed** it — and they can differ. If an order addressed to `design` gets executed by a client bridging on its behalf instead of the real Claude Design product, `completed_by` makes that visible instead of silently blending into "done". `history()` flags it explicitly with `executed_by_different_client: true` when the two don't match.
 
