@@ -7,20 +7,6 @@
    "source_client": "code",
    "checkpoint": "reducir-friccion-reinicio",
    "created": "2026-07-23 19:16"
-  },
-  {
-   "id": 2,
-   "text": "Puente con Claude Design (que NO tiene el MCP): se usa Google Drive como buzon. Un cliente con el MCP (Cowork o Code) lee la orden del inbox y escribe un doc en Drive llamado 'INBOX-DESIGN-order-<N>' con el brief+checkpoint. Design lo lee por su conector de Drive, ejecuta, y deja el resultado en un doc 'INBOX-DESIGN-order-<N>-RESULT' con la URL del artifact publicado. El cliente con MCP lee ese RESULT y cierra la orden con router_inbox complete. Design nunca toca el inbox local; el loop de vuelta es semi-manual.",
-   "source_client": "unknown",
-   "checkpoint": null,
-   "created": "2026-07-24 14:17"
-  },
-  {
-   "id": 3,
-   "text": "Si Gabriel autoriza o ejecuta el mismo una accion significativa por fuera del flujo pedido->completado (ej. reescritura de historial git/filter-repo, borrado manual de archivos, cambios directos en el repo sin pasar por una orden), debe dejar constancia en el inbox: router_inbox send con from='gabriel', to='any', message describiendo que se hizo y por que, y marcarla complete el mismo (by='gabriel'). Esto evita que un cliente que verifica el estado del repo interprete un cambio inesperado (ej. hashes de commit distintos, .git mas liviano) como una accion no documentada de otro cliente.",
-   "source_client": "unknown",
-   "checkpoint": null,
-   "created": "2026-07-24 14:58"
   }
  ]
 }

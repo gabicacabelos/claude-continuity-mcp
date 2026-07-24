@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-INDIVIDRA MCP Router — Instalador automático
+claude-continuity-mcp — Instalador automático
 
 Qué hace:
   1. Instala dependencias Python
-  2. Crea .env a partir de .env.example
-  3. Configura claude_desktop_config.json automáticamente
-  4. Verifica que server.py compila correctamente
+  2. Configura claude_desktop_config.json automáticamente
+  3. Verifica que server.py compila correctamente
+
+100% local: no crea .env ni pide API keys — el núcleo no usa ninguna.
 
 Uso:
   python install.py
@@ -15,15 +16,14 @@ Uso:
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 BANNER = """
 ╔══════════════════════════════════════════════╗
-║   INDIVIDRA MCP Router — Instalador v1.0.0   ║
-║   Token saver para Claude Desktop             ║
+║   claude-continuity-mcp — Instalador          ║
+║   Memoria persistente y compartida (local)    ║
 ╚══════════════════════════════════════════════╝
 """
 
@@ -64,26 +64,6 @@ def install_dependencies() -> bool:
     else:
         err(f"Error:\n{result.stderr[:400]}")
         return False
-
-
-def setup_env() -> bool:
-    env_file = PROJECT_DIR / ".env"
-    env_example = PROJECT_DIR / ".env.example"
-
-    if env_file.exists():
-        ok(".env ya existe — no se sobreescribe")
-        return True
-
-    if not env_example.exists():
-        err(".env.example no encontrado")
-        return False
-
-    shutil.copy(env_example, env_file)
-    ok(f".env creado")
-    print(f"\n   ⚠️  ACCIÓN REQUERIDA:")
-    print(f"   Editá el archivo: {env_file}")
-    print(f"   Reemplazá GEMINI_API_KEY y GROQ_API_KEY con tus claves reales")
-    return True
 
 
 def configure_claude_desktop() -> bool:
@@ -138,7 +118,6 @@ def main():
 
     steps = [
         ("Instalar dependencias", install_dependencies),
-        ("Crear .env", setup_env),
         ("Configurar Claude Desktop", configure_claude_desktop),
         ("Verificar sintaxis", verify_syntax),
     ]
@@ -159,9 +138,10 @@ def main():
 ✓ Instalación completa
 
 Próximos pasos:
-  1. Editá .env con tus claves API reales
-  2. Reiniciá Claude Desktop completamente
-  3. Verificá escribiendo en Claude: router_status()
+  1. Reiniciá Claude Desktop completamente
+  2. Verificá escribiendo en Claude: router_status()
+
+Opcional (ranking semántico local para smart_read): pip install fastembed
 """)
     else:
         print("\n⚠  Instalación parcial — revisar errores arriba\n")
