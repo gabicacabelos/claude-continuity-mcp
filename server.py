@@ -57,7 +57,7 @@ from router.ranker import build_outline, chunk_text, rank_chunks
 from router.sanitizer import sanitize_file_content
 from router import rules as project_rules
 from router import project_index
-from router.safety import PathNotAllowed, check_path
+from router.safety import PathNotAllowed, check_path, redact_secrets
 
 # ─────────────────────────────────────────────
 # Bootstrap
@@ -113,7 +113,7 @@ _stats = {
     "diff_reads": 0,
 }
 
-VERSION = "3.4.0"
+VERSION = "3.4.1"
 
 # Umbral: archivos por debajo se devuelven enteros (el overhead de RAG no rinde)
 FULL_RETURN_MAX_TOKENS = 1500
@@ -410,6 +410,13 @@ async def router_smart_read(params: SmartReadInput) -> str:
         return _j({"status": "error", "reason": str(e)[:200]})
 
     content, was_html = sanitize_file_content(raw, str(fp))
+    # Redacción por contenido: enmascara credenciales con forma reconocible
+    # (AWS/GitHub/OpenAI/Anthropic/Slack keys, JWTs, claves privadas, asignaciones
+    # password="..."/api_key="...") ANTES de tokenizar/persistir/devolver — así
+    # ni el ledger ni la respuesta a Claude contienen el valor real. Complementa
+    # la deny-list de archivos: cubre el secreto pegado por error DENTRO de un
+    # archivo normal, que por nombre/extensión no está bloqueado.
+    content, secrets_redacted = redact_secrets(content)
     tok_raw, tok_clean = _tokens(raw), _tokens(content)
     _stats["smart_reads"] += 1
     _stats["tokens_file_total"] += tok_raw
@@ -418,6 +425,8 @@ async def router_smart_read(params: SmartReadInput) -> str:
     if was_html:
         base["html_stripped"] = True
         base["tokens_after_clean"] = tok_clean
+    if secrets_redacted:
+        base["secrets_redacted"] = secrets_redacted
     # Reglas del proyecto inyectadas (piggyback): Claude las ve al tocar un
     # archivo del proyecto sin una llamada aparte. Se omite si no hay reglas.
     _rules = _rules_for_paths([str(fp)])

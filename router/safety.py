@@ -17,6 +17,7 @@ Dos capas, pensadas para no romper instalaciones existentes:
    raíz (comportamiento por defecto, no rompe nada).
 """
 
+import re
 from pathlib import Path
 
 # Directorios que nunca deberían leerse: si alguno de estos aparece como
@@ -105,3 +106,102 @@ def is_allowed(raw_path: str | Path, allowed_roots=None) -> bool:
         return True
     except PathNotAllowed:
         return False
+
+
+# ─── Redacción de secretos por CONTENIDO ──────────────────────────────────────
+# La deny-list de arriba bloquea archivos ENTEROS conocidos (.env, *.pem). Esto
+# cubre el caso que se le escapa: un secreto real pegado accidentalmente DENTRO
+# de un archivo normal (una API key hardcodeada en un config.py, por ejemplo).
+# Determinista por shape reconocible — nunca decide "esto parece sensible en
+# general", y nunca pasa por un LLM.
+
+_REDACTED = "█REDACTED█"
+
+_SECRET_PATTERNS = (
+    # (nombre, regex) — shapes de credencial real, no heurística difusa.
+    ("aws_access_key_id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b")),
+    ("openai_key", re.compile(r"\bsk-(?!ant-)[A-Za-z0-9]{20,}\b")),
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9\-]{20,}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}\b")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")),
+    ("private_key_block", re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S)),
+)
+
+# Asignaciones tipo `password = "..."`. Exige comillas a propósito: en código
+# fuente un secreto hardcodeado casi siempre es un string literal, mientras que
+# `token = getToken()` o `password = os.environ["PW"]` son referencias, no
+# secretos — sin este requisito ambos se enmascaraban como falso positivo.
+#
+# Sin \b inicial a propósito: `_` es un carácter de palabra en regex, así que
+# `DB_PASSWORD`/`MY_SECRET_KEY` (prefijo + guion bajo + palabra clave, un
+# patrón de nombrado real y común) no tendrían boundary ahí y se perderían.
+# El riesgo de over-matching queda acotado por el resto de la expresión: solo
+# dispara con string literal entre comillas de ≥8 chars, no con cualquier cosa.
+_ASSIGNMENT = re.compile(
+    r"""(?ix)
+    (password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token|token)
+    (\s*[:=]\s*)
+    (["'])
+    ([^"'\n]{8,})
+    \3
+    """,
+    re.VERBOSE,
+)
+
+# Valores de ejemplo/placeholder — no son secretos reales, no enmascarar
+# (si no, cualquier .env.example o doc con "api_key=your_key_here" se rompería).
+_PLACEHOLDER_VALUES = frozenset({
+    "changeme", "change_me", "your_api_key", "your-api-key", "your_key_here",
+    "xxxxxxxx", "placeholder", "example", "dummy", "fake", "none", "null",
+    "true", "false", "todo", "tbd", "insert_key_here", "replace_me", "secret",
+})
+
+
+def _mask(value: str) -> str:
+    if len(value) <= 6:
+        return _REDACTED
+    return f"{value[:4]}{_REDACTED}"
+
+
+def redact_secrets(text: str) -> tuple[str, int]:
+    """
+    Enmascara en el lugar los valores con forma de credencial conocida.
+    Devuelve (texto_con_secretos_enmascarados, cantidad_enmascarada).
+
+    Determinista: el mismo valor siempre enmascara igual (mismo prefijo visible
+    + mismo marcador), así que un diff entre dos lecturas del mismo secreto sin
+    cambios sigue detectando 'unchanged'; si el secreto rota, el diff lo marca
+    como cambio real sin exponer ni el valor viejo ni el nuevo.
+    """
+    count = 0
+
+    def _sub_shape(m: re.Match) -> str:
+        nonlocal count
+        count += 1
+        matched = m.group(0)
+        if "\n" in matched:
+            # El bloque de clave privada puede abarcar varias líneas: preservar
+            # la cantidad de saltos de línea para no correr la numeración del
+            # resto del archivo (chunking y diffs dependen de contar líneas).
+            return _REDACTED + "\n" * matched.count("\n")
+        return _mask(matched)
+
+    for _name, pattern in _SECRET_PATTERNS:
+        text = pattern.sub(_sub_shape, text)
+
+    def _sub_assignment(m: re.Match) -> str:
+        nonlocal count
+        value = m.group(4)
+        # Ya enmascarado por un patrón de shape en la pasada anterior (ej. un
+        # token de GitHub dentro de `token = "ghp_..."` matchea las dos reglas):
+        # no volver a contar ni a enmascarar un valor que ya es el marcador.
+        if _REDACTED in value or value.casefold() in _PLACEHOLDER_VALUES:
+            return m.group(0)
+        count += 1
+        quote = m.group(3)
+        return f"{m.group(1)}{m.group(2)}{quote}{_mask(value)}{quote}"
+
+    text = _ASSIGNMENT.sub(_sub_assignment, text)
+    return text, count

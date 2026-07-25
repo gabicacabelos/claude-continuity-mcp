@@ -21,7 +21,7 @@ from collections import Counter
 from pathlib import Path
 
 from .ranker import rank_chunks, tokenize
-from .safety import is_allowed, is_sensitive
+from .safety import is_allowed, is_sensitive, redact_secrets
 from .sanitizer import sanitize_file_content
 
 logger = logging.getLogger(__name__)
@@ -91,6 +91,7 @@ def build_index(ledger, root: str | Path, max_files: int = MAX_FILES,
         except Exception:
             continue
         content, _ = sanitize_file_content(raw, path_key)
+        content, _ = redact_secrets(content)  # nunca indexar/persistir el valor real
         h = ledger.hash(content)
         if ledger.indexed_hash(path_key) == h:
             skipped += 1
@@ -157,6 +158,7 @@ def search(ledger, root: str | Path, query: str, top_k: int = 5,
         try:
             raw = Path(path).read_text(encoding="utf-8", errors="replace")
             content, _ = sanitize_file_content(raw, path)
+            content, _ = redact_secrets(content)  # fragmentos devueltos, no exponer secretos
             top, _engine = rank_chunks(content, query, top_k=fragments_per_file)
             entry["fragments"] = [
                 {"lines": f"{c.start_line}-{c.end_line}", "text": c.text}

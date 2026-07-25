@@ -19,7 +19,7 @@ import time
 from array import array
 from pathlib import Path
 
-from .safety import is_allowed
+from .safety import is_allowed, redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +361,11 @@ class FileLedger:
                     logger.debug(f"drain: descartando fuera de scope/sensible: {p.name}")
                     continue
                 content = p.read_text(encoding="utf-8", errors="replace")
+                # Igual que en smart_read: enmascarar credenciales con forma
+                # reconocible antes de persistir, aunque el archivo haya pasado
+                # el filtro de path (el secreto puede estar pegado por error
+                # dentro de un archivo normal).
+                content, _ = redact_secrets(content)
                 if self.get(path) and self.get(path)["hash"] == self.hash(content):
                     self.touch(path)  # ya conocido y sin cambios: solo actualizar
                     promoted += 1

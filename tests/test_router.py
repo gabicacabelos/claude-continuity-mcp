@@ -730,7 +730,8 @@ def test_code_staleness_true_when_boot_predates_files(server_module):
     # boot_time muy en el pasado → cualquier archivo watched "cambió después"
     result = server_module._code_staleness(0.0)
     assert result["stale"] is True
-    assert result["changed_file"] in ("server.py", "inbox.py", "ledger.py", "ranker.py", "sanitizer.py", "__init__.py")
+    assert result["changed_file"] in ("server.py", "__init__.py", "inbox.py", "ledger.py",
+                                      "project_index.py", "ranker.py", "rules.py", "safety.py", "sanitizer.py")
     assert isinstance(result["changed_ago_s"], int)
     assert "reiniciá el MCP" in result["hint"]
 
@@ -1221,6 +1222,133 @@ def test_project_index_skips_sensitive_files(ledger, tmp_path):
     indexed = ledger.indexed_paths(str(proj.resolve()))
     assert any(p.endswith("app.py") for p in indexed)
     assert not any("secrets.json" in p for p in indexed), "secrets.json no debe indexarse"
+
+
+# ─── seguridad: redacción de secretos por CONTENIDO ───────────────────────────
+# Complementa la deny-list por path/nombre: cubre el secreto pegado por error
+# DENTRO de un archivo normal, que por extensión/nombre no está bloqueado.
+
+from router.safety import redact_secrets
+
+
+@pytest.mark.parametrize("src,shape", [
+    ('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"', "AKIA"),
+    ('token = "ghp_1234567890abcdefghijklmnopqrstuvwxyz12"', "github"),
+    ('OPENAI_API_KEY="sk-abcdefghijklmnopqrstuvwx"', "openai"),
+    ('ANTHROPIC_API_KEY="sk-ant-api03-abcdefghijklmnop"', "anthropic"),
+    ('SLACK_TOKEN="xoxb-1234567890-abcdefghij"', "slack"),
+    ('auth = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.'
+     'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"', "jwt"),
+    ('password = "SuperSecret123!"', "password con puntuación"),
+])
+def test_redact_secrets_masks_known_shapes(src, shape):
+    out, n = redact_secrets(src)
+    assert n == 1, f"debía enmascarar {shape}"
+    assert out != src
+    assert "█REDACTED█" in out
+
+
+def test_redact_secrets_private_key_block_preserves_line_count():
+    """
+    El bloque de clave privada abarca varias líneas: si se colapsa a una sola,
+    corre la numeración de todo lo que sigue en el archivo — chunking y diffs
+    dependen de contar líneas con precisión.
+    """
+    src = ("linea1\n-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n"
+           "masdatosaqui\n-----END RSA PRIVATE KEY-----\nlinea_despues\n")
+    out, n = redact_secrets(src)
+    assert n == 1
+    assert out.count("\n") == src.count("\n"), "la cantidad de líneas debe preservarse"
+    assert "linea_despues" in out
+    assert "MIIEpAIBAAKCAQEA" not in out
+
+
+@pytest.mark.parametrize("safe", [
+    'api_key=your_key_here',           # placeholder, no secreto real
+    'password=changeme',               # placeholder
+    'API_KEY=${SECRET_KEY}',           # interpolación de env var
+    'password = os.environ["PW"]',     # referencia, no literal
+    'def suma(a, b): return a + b',    # código normal
+    'const token = getToken()',        # llamada a función, no string literal
+    'self.secret = compute_secret(x)', # referencia
+])
+def test_redact_secrets_does_not_touch_safe_content(safe):
+    """Falsos positivos rompen la promesa de fidelidad exacta del producto."""
+    out, n = redact_secrets(safe)
+    assert n == 0 and out == safe
+
+
+def test_redact_secrets_is_deterministic():
+    """Mismo valor -> mismo mask, para que 'unchanged'/diff sigan funcionando."""
+    a, _ = redact_secrets('X="AKIAIOSFODNN7EXAMPLE"')
+    b, _ = redact_secrets('Y="AKIAIOSFODNN7EXAMPLE"')
+    assert a.split("=")[1] == b.split("=")[1]
+
+
+def test_redact_secrets_no_double_count_across_overlapping_patterns():
+    """Un GitHub token dentro de `token = "ghp_..."` matchea shape Y asignación."""
+    out, n = redact_secrets('token = "ghp_1234567890abcdefghijklmnopqrstuvwxyz12"')
+    assert n == 1, "no debe contarse dos veces por la misma credencial"
+
+
+def test_smart_read_redacts_secret_in_normal_source_file(server_module, tmp_path, monkeypatch):
+    """End-to-end: un secreto pegado en un .py normal no llega intacto ni a la
+    respuesta ni al ledger, aunque el archivo pase el filtro de path."""
+    led = FileLedger(str(tmp_path / "rs.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    f = tmp_path / "config.py"
+    f.write_text('API_KEY = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"\n', encoding="utf-8")
+
+    r = _smart_read(server_module, file_path=str(f))
+    assert r["status"] == "full"
+    assert r.get("secrets_redacted") == 1
+    assert "abcdefghijklmnopqrstuvwxyz1234567890" not in r["content"]
+    assert "█REDACTED█" in r["content"]
+
+    stored = led.get(str(f.resolve()))
+    assert "abcdefghijklmnopqrstuvwxyz1234567890" not in (stored["snapshot"] or ""), \
+        "el secreto tampoco debe quedar en claro en el ledger"
+    led.close()
+
+
+def test_smart_read_omits_secrets_redacted_field_when_clean(server_module, tmp_path, monkeypatch):
+    led = FileLedger(str(tmp_path / "rs2.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    f = tmp_path / "clean.py"
+    f.write_text("def suma(a, b): return a + b\n", encoding="utf-8")
+
+    r = _smart_read(server_module, file_path=str(f))
+    assert "secrets_redacted" not in r, "sin secretos, el campo no debe existir"
+    led.close()
+
+
+def test_drain_redacts_secret_captured_by_hook(ledger, tmp_path):
+    """La captura pasiva también redacta: el hook no filtra, pero el drain sí."""
+    f = tmp_path / "app.py"
+    f.write_text('SLACK_TOKEN = "xoxb-1234567890-abcdefghij"\n', encoding="utf-8")
+    ledger._db.execute("INSERT INTO raw_reads (path, client, seen_at) VALUES (?,?,?)",
+                       (str(f), "code", time.time()))
+    ledger._db.commit()
+
+    ledger.drain_raw_reads()
+    entry = ledger.get(str(f))
+    assert entry is not None
+    assert "abcdefghij" not in (entry["snapshot"] or "")
+
+
+def test_project_index_search_does_not_leak_secret_in_fragment(ledger, tmp_path):
+    """Los fragmentos exactos que devuelve project_search tampoco exponen secretos."""
+    from router import project_index as PI
+    proj = tmp_path / "p2"
+    proj.mkdir()
+    (proj / "config.py").write_text(
+        'DB_PASSWORD = "hunter2superSecret"\ndef connect(): return DB_PASSWORD\n',
+        encoding="utf-8")
+    PI.build_index(ledger, proj)
+    results = PI.search(ledger, proj, "conectar a la base de datos DB_PASSWORD connect", top_k=1)
+    assert results, "debe encontrar el archivo"
+    joined = " ".join(fr["text"] for fr in results[0]["fragments"])
+    assert "hunter2superSecret" not in joined
 
 
 # ─── seguridad: config saneada ───────────────────────────────────────────────
