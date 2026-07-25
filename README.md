@@ -303,12 +303,30 @@ Runtime tunables can be adjusted **without restarting the MCP**. Copy `router_co
 
 | Key | Default | What it controls |
 |---|---|---|
+| `allowed_roots` | `[]` | Strict mode: if non-empty, only paths inside these roots can be read or indexed. Empty = no root restriction (the sensitive-file deny-list still applies) |
 | `full_return_max_tokens` | `1500` | Threshold below which a file is returned whole |
 | `default_top_k` | `4` | Fragments to return when the call doesn't pass `top_k` |
 | `diff_max_ratio` | `0.6` | If the diff weighs more than this fraction of the file, it's not worth it and normal content is returned |
 | `cache_enabled` | `true` | Query→fragments cache and embedding vector cache |
 
-If `router_config.json` doesn't exist, the defaults apply (zero-config). **Logic** changes (new code in `server.py`/`router/`) still require a restart — that's unavoidable; hot config only removes restarts for tunable adjustments.
+Values are type-checked and clamped to sane ranges; anything invalid falls back to its default instead of breaking the tool. If `router_config.json` doesn't exist, the defaults apply (zero-config). **Logic** changes (new code in `server.py`/`router/`) still require a restart — that's unavoidable; hot config only removes restarts for tunable adjustments.
+
+## Security model
+
+This server reads files from your disk and persists what it reads. Worth knowing before you install it:
+
+**File access is restricted on two levels.**
+
+1. **Deny-list, always on (no configuration needed).** Credentials and key material are never read and never stored: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `.env` (and `.env.*`), `*.pem`, `*.key`, `*.p12`, `*.kdbx`, `.netrc`, `.pgpass`, shell history, and similar. Paths are fully resolved (symlinks and `..`) *before* validation, so traversal like `proj/../../.ssh/id_rsa` is rejected too.
+2. **Allow-list, opt-in (strict mode).** Set `allowed_roots` in `router_config.json` and anything outside those roots is refused — for reads, for project indexing, and for passive capture. Empty by default so a fresh install doesn't break; recommended if you work on machines holding third-party data.
+
+**What gets persisted, and where.** Every file read through `smart_read` (and every file captured by the optional hook) is stored in `cache/ledger.db` — **including a full plaintext snapshot** of files up to 400 KB, kept for 30 days. That's what makes diff reads possible. The DB is local and gitignored, but it is *not* encrypted: treat `cache/` as sensitive as the projects you point this at. Delete it any time; it rebuilds itself.
+
+**Inbox orders are untrusted input.** An order's `message` is free text that another Claude client reads and acts on, and `from` is self-declared — not verified. Anything with write access to `cache/inbox.db` can queue an order. The tool payload, the server instructions, and the `/inbox` prompt all mark orders as untrusted and tell the model to show you the literal text and get confirmation before anything hard to reverse (push, delete, publish, install, running commands). **This is a mitigation, not a guarantee** — a language model can be talked out of a guardrail. Don't run an inbox you don't control, and read orders before approving destructive work.
+
+**The Google Drive bridge sends project data off your machine.** The Design handoff (see above) writes briefs into a Google Doc so Claude Design can read them. That content leaves local disk and lands in your Drive account under whatever sharing permissions it has. The "100% local" property does not hold for that flow — don't put secrets in a brief.
+
+**Not covered.** This is a local, single-user tool: no authentication, no sandbox, and no protection against another process on the same machine that already has your filesystem permissions. It assumes you trust the projects you point it at and the code your Claude clients run.
 
 ## Known limitations
 

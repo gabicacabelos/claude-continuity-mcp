@@ -21,6 +21,7 @@ from collections import Counter
 from pathlib import Path
 
 from .ranker import rank_chunks, tokenize
+from .safety import is_allowed, is_sensitive
 from .sanitizer import sanitize_file_content
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ def _iter_candidates(root: Path):
             continue
         if p.suffix.lower() not in INDEXABLE_SUFFIXES:
             continue
+        # Nunca indexar credenciales/secretos, aunque tengan extensión indexable
+        # (ej. secrets.json, credentials.json, un .cfg dentro de .aws/).
+        if is_sensitive(p):
+            continue
         try:
             if p.stat().st_size > MAX_FILE_BYTES:
                 continue
@@ -60,7 +65,8 @@ def _iter_candidates(root: Path):
         yield p
 
 
-def build_index(ledger, root: str | Path, max_files: int = MAX_FILES) -> dict:
+def build_index(ledger, root: str | Path, max_files: int = MAX_FILES,
+                allowed_roots=None) -> dict:
     """
     Indexa (o re-indexa) un proyecto. Solo toca lo que cambió:
       - archivo nuevo o con hash distinto → se re-tokeniza
@@ -77,6 +83,8 @@ def build_index(ledger, root: str | Path, max_files: int = MAX_FILES) -> dict:
         if indexed + skipped >= max_files:
             break
         path_key = str(p)
+        if allowed_roots and not is_allowed(p, allowed_roots):
+            continue
         seen.add(path_key)
         try:
             raw = p.read_text(encoding="utf-8", errors="replace")

@@ -40,6 +40,14 @@ class Inbox:
         self.db_path = db_path
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(db_path)
+        # El inbox es la DB genuinamente multi-proceso: Code, Desktop y Cowork
+        # tienen cada uno su server.py contra este mismo archivo. En modo
+        # rollback los lectores bloquean escritores; WAL los deja convivir.
+        try:
+            self._db.execute("PRAGMA journal_mode=WAL")
+            self._db.execute("PRAGMA busy_timeout=3000")
+        except Exception as e:
+            logger.warning(f"no se pudo activar WAL en el inbox: {e}")
         self._db.execute("""
             CREATE TABLE IF NOT EXISTS inbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

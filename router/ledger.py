@@ -19,6 +19,8 @@ import time
 from array import array
 from pathlib import Path
 
+from .safety import is_allowed
+
 logger = logging.getLogger(__name__)
 
 SNAPSHOT_MAX_CHARS = 400_000   # no guardar snapshots de archivos gigantes
@@ -331,7 +333,7 @@ class FileLedger:
 
     # ─── Captura pasiva (hooks) ───────────────────────────────────────────────
 
-    def drain_raw_reads(self, limit: int = 200) -> int:
+    def drain_raw_reads(self, limit: int = 200, allowed_roots=None) -> int:
         """
         Promueve lo que el hook dejó en raw_reads al ledger real: lee el archivo,
         calcula hash/outline y lo registra. Corre del lado del MCP (no del hook),
@@ -351,6 +353,12 @@ class FileLedger:
             try:
                 p = Path(path)
                 if not p.is_file():
+                    continue
+                # La captura pasiva ve TODO lo que el cliente lee: filtrar acá
+                # evita que credenciales leídas con el Read nativo terminen
+                # persistidas en claro en el ledger.
+                if not is_allowed(p, allowed_roots):
+                    logger.debug(f"drain: descartando fuera de scope/sensible: {p.name}")
                     continue
                 content = p.read_text(encoding="utf-8", errors="replace")
                 if self.get(path) and self.get(path)["hash"] == self.hash(content):

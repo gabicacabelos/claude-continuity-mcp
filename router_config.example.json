@@ -1,5 +1,9 @@
 {
-  "_comment": "Copiá este archivo a router_config.json para ajustar tunables SIN reiniciar el MCP. Si router_config.json no existe, aplican estos defaults.",
+  "_comment": "Copiá este archivo a router_config.json para ajustar tunables SIN reiniciar el MCP. Si router_config.json no existe, aplican estos defaults. Los valores fuera de rango o de otro tipo caen al default.",
+
+  "_allowed_roots": "OPCIONAL — modo estricto. Con la lista vacía (default) el MCP puede leer cualquier ruta EXCEPTO material sensible (claves, .env, *.pem, ~/.ssh, ~/.aws...), que está bloqueado siempre. Si listás raíces, todo lo que quede fuera se rechaza. Recomendado si vas a usarlo sobre máquinas con datos de terceros. Ej: [\"C:/Users/vos/proyectos\", \"/home/vos/dev\"]",
+  "allowed_roots": [],
+
   "full_return_max_tokens": 1500,
   "default_top_k": 4,
   "diff_max_ratio": 0.6,

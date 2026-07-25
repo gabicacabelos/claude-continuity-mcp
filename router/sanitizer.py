@@ -10,10 +10,31 @@ Un payload web limpio puede pesar 40-60% menos en tokens sin perder contenido.
 import html as _html
 import re
 
+# Extensiones cuyo contenido es FUENTE y jamás debe pasar por strip_html.
+# La lista peca de amplia a propósito: un falso negativo acá destruye el
+# archivo del usuario (ver historial: un .py con literales HTML quedaba
+# irreconocible), mientras que un falso positivo solo evita una limpieza.
 _CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml", ".toml",
-    ".sql", ".sh", ".bash", ".rs", ".go", ".java", ".c", ".cpp", ".h",
-    ".xml", ".proto", ".graphql", ".env", ".ini", ".cfg",
+    # markup y templates — leerlos es leer su fuente, no renderizarlo
+    ".html", ".htm", ".xhtml", ".vue", ".svelte", ".astro", ".jsx", ".tsx",
+    ".hbs", ".handlebars", ".ejs", ".pug", ".jade", ".jinja", ".jinja2", ".j2",
+    ".twig", ".erb", ".haml", ".liquid", ".mustache", ".razor", ".cshtml", ".blade",
+    # lenguajes
+    ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".coffee",
+    ".rb", ".php", ".pl", ".pm", ".lua", ".r", ".jl", ".dart", ".swift",
+    ".kt", ".kts", ".scala", ".groovy", ".clj", ".cljs", ".edn", ".ex", ".exs",
+    ".erl", ".hs", ".ml", ".fs", ".fsx", ".nim", ".zig", ".v", ".d",
+    ".rs", ".go", ".java", ".c", ".h", ".cpp", ".cc", ".cxx", ".hpp", ".hh",
+    ".cs", ".vb", ".m", ".mm", ".asm", ".s",
+    # datos, config y scripts
+    ".json", ".jsonc", ".json5", ".yaml", ".yml", ".toml", ".ini", ".cfg",
+    ".conf", ".properties", ".sql", ".graphql", ".gql", ".proto", ".xml",
+    ".xsl", ".xslt", ".svg", ".plist", ".gradle", ".tf", ".tfvars", ".hcl",
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".cmd",
+    ".dockerfile", ".env", ".editorconfig", ".gitignore", ".gitattributes",
+    # documentación con formato significativo (indentación, fences)
+    ".md", ".markdown", ".mdx", ".rst", ".adoc", ".asciidoc", ".org", ".tex",
+    ".txt", ".csv", ".tsv", ".log", ".diff", ".patch",
 }
 
 _RE_SCRIPT = re.compile(r"<(script|style|noscript|svg|iframe|head)\b[^>]*>.*?</\1\s*>", re.S | re.I)
@@ -25,7 +46,11 @@ _RE_BLOCK = re.compile(
 _RE_TAG = re.compile(r"<[^>]{1,500}>")
 _RE_ZERO_WIDTH = re.compile(r"[​‌‍⁠﻿]")
 _RE_MULTI_BLANK = re.compile(r"\n{3,}")
-_RE_MULTI_SPACE = re.compile(r"[ \t]{2,}")
+# Solo colapsa runs de espacios INTERNOS (precedidos por un no-espacio). Nunca
+# toca la indentación inicial: un bloque de código indentado en markdown, o
+# cualquier formato donde la sangría es significativa, queda intacto aunque el
+# archivo no esté marcado como código.
+_RE_MULTI_SPACE = re.compile(r"(?<=\S)[ \t]{2,}")
 
 
 def looks_like_html(text: str) -> bool:

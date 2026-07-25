@@ -44,6 +44,11 @@ from pathlib import Path
 # Presupuesto total del hook. Por encima de esto preferimos perder la captura.
 BUSY_TIMEOUT_MS = 100
 
+# El evento PostToolUse incluye `tool_response`, o sea el CONTENIDO del archivo
+# leído: un Read de 50MB llegaría entero por stdin. Solo necesitamos el
+# file_path de `tool_input`, así que leemos un prefijo acotado y nada más.
+MAX_STDIN_BYTES = 256_000
+
 DB_PATH = Path(__file__).resolve().parent.parent / "cache" / "ledger.db"
 
 
@@ -59,12 +64,14 @@ def _extract_path(event: dict) -> str | None:
 
 def main() -> None:
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read(MAX_STDIN_BYTES)
         if not raw:
             return
         event = json.loads(raw)
     except Exception:
-        return  # entrada rara: no es asunto del hook romper nada
+        # Entrada rara, truncada o gigante: no es asunto del hook romper nada.
+        # Perder una captura es gratis; frenar la terminal del usuario no.
+        return
 
     path = _extract_path(event)
     if not path:

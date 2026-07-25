@@ -36,6 +36,16 @@ def _normalize(text: str) -> str:
     return " ".join(text.split()).casefold()
 
 
+def _neutralize_markers(text: str) -> str:
+    """
+    Impide que el texto de una regla cierre el bloque gestionado del CLAUDE.md.
+    Sin esto, una regla que contenga el marcador de fin parte la sección en dos:
+    el resto queda FUERA del bloque, el sync ya no lo puede limpiar y se duplica
+    en cada escritura — y CLAUDE.md se auto-carga como instrucciones.
+    """
+    return text.replace("<!--", "< !--").replace("-->", "-- >")
+
+
 def rules_path(project_dir: str | Path) -> Path:
     return Path(project_dir) / RULES_FILENAME
 
@@ -132,9 +142,9 @@ def sync_to_claudemd(project_dir: str | Path) -> Path:
              "<!-- Sección generada por claude-continuity-mcp (router_rules). No editar a mano: se regenera en cada sync. -->",
              "## Reglas del proyecto", ""]
     for r in rules:
-        prov = f" _(decidida por {r['source_client']}, {r['created']}"
-        prov += f", checkpoint `{r['checkpoint']}`)_" if r.get("checkpoint") else ")_"
-        lines.append(f"- {r['text']}{prov}")
+        prov = f" _(decidida por {_neutralize_markers(str(r['source_client']))}, {r['created']}"
+        prov += f", checkpoint `{_neutralize_markers(str(r['checkpoint']))}`)_" if r.get("checkpoint") else ")_"
+        lines.append(f"- {_neutralize_markers(r['text'])}{prov}")
     lines.append(CLAUDEMD_END)
     block = "\n".join(lines)
 
@@ -142,8 +152,11 @@ def sync_to_claudemd(project_dir: str | Path) -> Path:
     if md.is_file():
         content = md.read_text(encoding="utf-8")
         if CLAUDEMD_START in content and CLAUDEMD_END in content:
+            # rsplit en el ÚLTIMO marcador de cierre: si una versión anterior
+            # dejó marcadores duplicados dentro del bloque, esto los absorbe en
+            # vez de dejar basura suelta fuera de la sección gestionada.
             pre = content.split(CLAUDEMD_START)[0]
-            post = content.split(CLAUDEMD_END, 1)[1]
+            post = content.rsplit(CLAUDEMD_END, 1)[1]
             content = pre + block + post
         else:
             content = content.rstrip("\n") + "\n\n" + block + "\n"
