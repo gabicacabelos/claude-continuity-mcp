@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "claude-continuity-mcp"
 dynamic = ["version"]
-description = "Persistent, shared memory for Claude across sessions and clients (Code, Desktop, Cowork) - deterministic diff reads, checkpoints and cross-client task handoff. 100% local, no API keys."
+description = "Persistent, shared memory for AI coding agents (Claude Code, Desktop, Cursor, Codex, Gemini CLI...) - diff reads, compaction shield, verified checkpoints and cross-agent handoff. 100% local, no API keys."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

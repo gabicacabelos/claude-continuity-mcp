@@ -730,8 +730,8 @@ def test_code_staleness_true_when_boot_predates_files(server_module):
     # boot_time muy en el pasado → cualquier archivo watched "cambió después"
     result = server_module._code_staleness(0.0)
     assert result["stale"] is True
-    assert result["changed_file"] in ("server.py", "__init__.py", "inbox.py", "ledger.py",
-                                      "project_index.py", "ranker.py", "rules.py", "safety.py", "sanitizer.py")
+    router_modules = {p.name for p in (Path(__file__).parent.parent / "router").glob("*.py")}
+    assert result["changed_file"] in {"server.py", *router_modules}
     assert isinstance(result["changed_ago_s"], int)
     assert "reiniciá el MCP" in result["hint"]
 
@@ -1999,7 +1999,7 @@ def test_report_is_net_of_overhead_with_breakdown(metrics_db):
     assert hows[0] == "re-lecturas evitadas", "ordenado por tokens ahorrados"
     assert sum(m["pct"] for m in r["by_mechanism"]) in (99, 100, 101)
     assert r["top_files"][0] == {"file": "server.py", "tokens": 9_950 + 4_000}
-    assert "claude-code" in r["clients"]
+    assert "Claude Code" in r["clients"]
     assert "note" not in r
 
 
@@ -2110,3 +2110,288 @@ def test_status_report_on_demand(server_module, server_metrics):
 def test_report_prompt_points_to_status(server_module):
     p = server_module.prompt_report()
     assert "router_status" in p and "report" in p
+
+
+# ─── escudo de compactación: checkpoint automático antes, contexto después ────
+# La queja #1 de Claude Code: al compactar se olvida reglas, pedidos y archivos.
+# PreCompact guarda el estado (determinista, desde la transcripción) y
+# SessionStart(compact) lo reinyecta junto con las reglas del proyecto.
+
+from router import compaction as C
+
+HOOKS_DIR = Path(__file__).parent.parent / "hooks"
+
+
+def _line(kind, content):
+    return json.dumps({"type": kind, "message": {"role": kind, "content": content}})
+
+
+def _fake_transcript(tmp_path, edited):
+    t = tmp_path / "session.jsonl"
+    lines = [
+        _line("user", "arreglá el login que falla con tokens vencidos"),
+        _line("user", [{"type": "text", "text": "<system-reminder>ruido del harness</system-reminder>"}]),
+        _line("assistant", [{"type": "tool_use", "id": "1", "name": "Read", "input": {"file_path": str(edited)}}]),
+        _line("assistant", [{"type": "tool_use", "id": "2", "name": "Edit",
+                             "input": {"file_path": str(edited), "old_string": "a", "new_string": "b"}}]),
+        _line("user", [{"type": "tool_result", "tool_use_id": "2", "content": "ok"}]),
+        _line("assistant", [{"type": "tool_use", "id": "3", "name": "TodoWrite", "input": {"todos": [
+            {"content": "agregar test de expiración", "status": "pending"},
+            {"content": "arreglar refresh", "status": "completed"}]}}]),
+        json.dumps({"type": "api-request-blob", "message": {"content": [
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "/no/debe/contar.py"}}]}}),
+        _line("user", [{"type": "text", "text": "y que el refresh use RS256"}]),
+    ]
+    t.write_text("\n".join(lines) + "\nesto no es json\n", encoding="utf-8")
+    return t
+
+
+def test_extract_session_state_is_deterministic_and_filters_noise(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    st = C.extract_session_state(_fake_transcript(tmp_path, f))
+    assert st["prompts"] == ["arreglá el login que falla con tokens vencidos", "y que el refresh use RS256"]
+    assert st["edited"] == [str(f)]
+    assert st["todos"] == ["agregar test de expiración"], "solo las tareas sin terminar"
+
+
+def test_compaction_checkpoint_is_resumable_and_pruned(tmp_path, server_module, monkeypatch):
+    _, f = _auth_proj(tmp_path)
+    cps = tmp_path / "cps"
+    st = C.extract_session_state(_fake_transcript(tmp_path, f))
+    name = C.save_compaction_checkpoint(st, cps, session_id="abc-123", trigger="auto")
+    assert name == "autocompact-abc-123"
+    monkeypatch.setattr(server_module, "_checkpoints_dir", cps)
+    r = _checkpoint(server_module, action="resume", name=name)
+    assert r["status"] == "resumed" and "tokens vencidos" in r["summary"]
+    assert r["open_items"] == ["agregar test de expiración"]
+    assert r["files"][0]["state"] == "unchanged"
+
+    for i in range(C.MAX_AUTO_CHECKPOINTS + 3):
+        C.save_compaction_checkpoint(st, cps, session_id=f"s{i}", trigger="auto")
+    assert len(list(cps.glob("autocompact-*.json"))) == C.MAX_AUTO_CHECKPOINTS
+
+
+def test_restore_context_includes_state_and_project_rules(tmp_path):
+    proj, f = _auth_proj(tmp_path)
+    R.add_rule(proj, "nunca loguear tokens", source_client="code")
+    cps = tmp_path / "cps"
+    C.save_compaction_checkpoint(C.extract_session_state(_fake_transcript(tmp_path, f)), cps,
+                                 session_id="abc-123", trigger="manual")
+    ctx = C.restore_context(cps, session_id="abc-123", cwd=str(proj))
+    for expected in ("tokens vencidos", "RS256", str(f), "agregar test de expiración",
+                     "nunca loguear tokens", "autocompact-abc-123"):
+        assert expected in ctx
+    assert C.restore_context(cps, session_id="otra-sesion", cwd=str(proj)) is None
+
+
+def _run_hook_script(name, event, home):
+    import subprocess
+    env = {**os.environ, "CLAUDE_CONTINUITY_HOME": str(home)}
+    return subprocess.run([sys.executable, str(HOOKS_DIR / name)], input=json.dumps(event),
+                          capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+
+
+def test_hooks_end_to_end_shield_and_restore(tmp_path):
+    proj, f = _auth_proj(tmp_path)
+    home = tmp_path / "home"
+    t = _fake_transcript(tmp_path, f)
+    pre = _run_hook_script("pre_compact.py", {"session_id": "sid-1", "transcript_path": str(t),
+                                              "trigger": "auto", "cwd": str(proj)}, home)
+    assert pre.returncode == 0 and pre.stderr == ""
+    assert (home / "checkpoints" / "autocompact-sid-1.json").is_file()
+    assert "checkpoint" in json.loads(pre.stdout)["systemMessage"]
+    m = Metrics(str(home / "cache" / "metrics.db"))
+    assert [e["kind"] for e in m.events_between(0, time.time() + 1)] == ["compaction_shielded"]
+    m.close()
+
+    post = _run_hook_script("session_start.py", {"session_id": "sid-1", "source": "compact", "cwd": str(proj)}, home)
+    out = json.loads(post.stdout)["hookSpecificOutput"]
+    assert out["hookEventName"] == "SessionStart" and "tokens vencidos" in out["additionalContext"]
+
+    fresh = _run_hook_script("session_start.py", {"session_id": "sid-1", "source": "startup", "cwd": str(proj)}, home)
+    assert fresh.returncode == 0 and fresh.stdout == "", "solo actúa después de compactar"
+
+
+def test_hooks_never_break_the_session_on_garbage(tmp_path):
+    for name in ("pre_compact.py", "session_start.py"):
+        import subprocess
+        proc = subprocess.run([sys.executable, str(HOOKS_DIR / name)], input="{no es json",
+                              capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "CLAUDE_CONTINUITY_HOME": str(tmp_path / "h")})
+        assert proc.returncode == 0 and proc.stderr == ""
+
+
+def test_report_counts_shielded_compactions(metrics_db):
+    metrics_db.record("compaction_shielded", ref="autocompact-x", ts=100)
+    assert build_report(metrics_db.events_between(0, 200))["compactions_shielded"] == 1
+
+
+# ─── tarjeta compartible del ahorro ───────────────────────────────────────────
+
+from router import card as K
+from router import clients as CL
+import xml.etree.ElementTree as ET
+
+
+def _report(metrics_db, start=1_000_000):
+    _seed_day(metrics_db, start)
+    return build_report(metrics_db.events_between(0, start + 10 * H))
+
+
+def test_card_svg_is_valid_and_shows_the_honest_numbers(metrics_db):
+    svg = K.build_card_svg(_report(metrics_db), period="week", lang="en")
+    ET.fromstring(svg)  # XML válido
+    assert "20.6K" in svg and "tokens" in svg
+    assert "re-reads avoided" in svg
+    assert "github.com/gabicacabelos/claude-continuity-mcp" in svg
+    assert "net of" in svg
+
+
+def test_card_never_leaks_file_or_project_names(metrics_db):
+    svg = K.build_card_svg(_report(metrics_db), period="week", lang="en")
+    assert "server.py" not in svg and "README" not in svg and "/p/" not in svg
+
+
+def test_card_in_spanish_and_honest_when_overhead_wins(metrics_db):
+    metrics_db.record("boot", tokens_delivered=3_000, ts=100)
+    metrics_db.record("full", tokens_source=200, tokens_delivered=200, ref="/p/a.py", ts=200)
+    svg = K.build_card_svg(build_report(metrics_db.events_between(0, 1_000)), period="today", lang="es")
+    ET.fromstring(svg)
+    assert "costo fijo" in svg
+
+
+def test_card_html_has_png_export(metrics_db):
+    html = K.build_card_html(K.build_card_svg(_report(metrics_db), period="week", lang="en"))
+    assert "<svg" in html and "toBlob" in html and "download" in html.lower()
+
+
+def test_status_writes_shareable_card_files(server_module, server_metrics, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_module, "_data_dir", tmp_path / "data")
+    _seed_day(server_metrics, time.time() - 2 * 24 * H)
+    r = _status(server_module, report="week", card=True)
+    svg, html = Path(r["card"]["svg"]), Path(r["card"]["html"])
+    assert svg.is_file() and html.is_file() and svg.parent == tmp_path / "data" / "cards"
+    assert "PNG" in r["card"]["hint"]
+
+
+def test_client_names_are_normalized():
+    assert CL.client_id("claude-code") == "code"
+    assert CL.client_id("claude-ai") == "desktop"
+    assert CL.client_id("Cursor") == "cursor"
+    assert CL.client_id("codex-mcp-client") == "codex"
+    assert CL.client_id("gemini-cli-mcp-client") == "gemini"
+    assert CL.client_id("Visual Studio Code") == "copilot"
+    assert CL.client_id("Mi Agente Raro!") == "mi-agente-raro"
+    assert CL.client_id(None) is None
+    assert CL.friendly("codex-mcp-client") == "Codex"
+
+
+def test_report_shows_friendly_client_names(metrics_db):
+    metrics_db.record("boot", client="claude-code", ts=1)
+    metrics_db.record("boot", client="cursor", ts=2)
+    assert build_report(metrics_db.events_between(0, 10))["clients"] == ["Claude Code", "Cursor"]
+
+
+# ─── "¿por qué hicimos esto?": historia de decisiones por línea o símbolo ─────
+
+from router import history as HI
+
+
+def test_parse_ref_variants():
+    assert HI.parse_ref("src/auth.py:120") == {"path": "src/auth.py", "line": 120, "symbol": None}
+    assert HI.parse_ref(r"C:\proj\auth.py:3") == {"path": r"C:\proj\auth.py", "line": 3, "symbol": None}
+    assert HI.parse_ref("`router/ledger.py`") == {"path": "router/ledger.py", "line": None, "symbol": None}
+    assert HI.parse_ref("validate_token()") == {"path": None, "line": None, "symbol": "validate_token"}
+    assert HI.parse_ref("ledger.check_files")["symbol"] == "check_files"
+
+
+def _cp(name, ts, summary, files=(), anchors=(), decisions=()):
+    return {"name": name, "saved_at": "2026-11-01 10:00", "ts": ts, "summary": summary,
+            "decisions": list(decisions), "open_items": [], "files": [{"path": f, "hash": None} for f in files],
+            "anchors": list(anchors)}
+
+
+def test_why_ranks_line_anchor_over_file_and_mentions(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors([f"`{f}:3`"], [str(f)])
+    cps = [
+        _cp("mention", 3, "toqué auth.py de pasada"),
+        _cp("tracked", 2, "refactor general", files=[str(f)]),
+        _cp("exact", 1, "validación de tokens", anchors=anchors, decisions=["usar RS256 por rotación de claves"]),
+    ]
+    r = HI.find_history("router/auth.py:4", cps, orders=[])
+    assert [c["name"] for c in r["checkpoints"]] == ["exact", "tracked", "mention"]
+    assert r["checkpoints"][0]["decisions"] == ["usar RS256 por rotación de claves"]
+    assert r["checkpoints"][0]["still_valid"] is True
+
+
+def test_why_reports_drift_when_code_changed(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    cps = [_cp("exact", 1, "x", anchors=V.build_anchors([f"`{f}:3`"], [str(f)]))]
+    f.write_text("import os\n\ndef check(t):\n    return True\n", encoding="utf-8")
+    top = HI.find_history(f"{f}:3", cps, orders=[])["checkpoints"][0]
+    assert top["still_valid"] is False and top["drift"][0]["issue"] == "line_changed"
+
+
+def test_why_by_symbol_and_orders(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    cps = [_cp("sym", 1, "login", anchors=V.build_anchors(["`validate_token()`"], [str(f)])),
+           _cp("otro", 2, "nada que ver")]
+    orders = [{"id": 7, "done": "2026-11-01 11:00", "message": "revisar validate_token en prod",
+               "result": "ok", "completed_by": "code"},
+              {"id": 8, "done": "2026-11-01 12:00", "message": "otra cosa", "result": "", "completed_by": "code"}]
+    r = HI.find_history("validate_token()", cps, orders)
+    assert [c["name"] for c in r["checkpoints"]] == ["sym"]
+    assert [o["id"] for o in r["orders"]] == [7]
+
+
+def test_checkpoint_why_action_end_to_end(server_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_module, "_checkpoints_dir", tmp_path / "cps")
+    ib = Inbox(str(tmp_path / "why_inbox.db"))
+    monkeypatch.setattr(server_module, "inbox", ib)
+    proj, f = _auth_proj(tmp_path)
+    R.add_rule(proj, "nunca loguear tokens", source_client="code")
+    _checkpoint(server_module, action="save", name="auth-rs256",
+                summary=f"login en `{f}:3`", decisions=["RS256 por rotación de claves"], files=[str(f)])
+    r = _checkpoint(server_module, action="why", ref=f"{f}:3")
+    assert r["status"] == "ok" and r["checkpoints"][0]["name"] == "auth-rs256"
+    assert "nunca loguear tokens" in r["project_rules"]
+
+    assert _checkpoint(server_module, action="why")["status"] == "error"
+    empty = _checkpoint(server_module, action="why", ref="nada_que_ver()")
+    assert empty["checkpoints"] == [] and "archivo:línea" in empty["hint"]
+    ib.close()
+
+
+# ─── multi-agente: cualquier cliente MCP, identidad detectada sola ────────────
+
+def test_inbox_detects_sender_and_executor_from_mcp_client(server_module, tmp_path, monkeypatch):
+    ib = Inbox(str(tmp_path / "ma_inbox.db"))
+    monkeypatch.setattr(server_module, "inbox", ib)
+    monkeypatch.setattr(server_module, "_client_name", lambda: "Cursor")
+    sent = _inbox_tool(server_module, action="send", message="migrar auth a RS256", to="codex")
+    assert sent["status"] == "sent" and sent["from"] == "cursor"
+
+    monkeypatch.setattr(server_module, "_client_name", lambda: "codex-mcp-client")
+    pending = _inbox_tool(server_module, action="check", to="codex")
+    assert pending["orders"][0]["from"] == "cursor", "cualquier agente puede ser destinatario"
+    _inbox_tool(server_module, action="complete", order_id=sent["id"], result="hecho")
+    done = _inbox_tool(server_module, action="history")
+    assert done["completed"][0]["completed_by"] == "codex"
+    ib.close()
+
+
+def test_explicit_identity_still_wins_over_detection(server_module, tmp_path, monkeypatch):
+    ib = Inbox(str(tmp_path / "ma2_inbox.db"))
+    monkeypatch.setattr(server_module, "inbox", ib)
+    monkeypatch.setattr(server_module, "_client_name", lambda: "claude-ai")
+    sent = _inbox_tool(server_module, action="send", message="x", to="code", from_client="cowork")
+    assert sent["from"] == "cowork"
+    ib.close()
+
+
+def test_plugin_ships_compaction_hooks():
+    cfg = json.loads((HOOKS_DIR / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    assert "pre_compact.py" in cfg["PreCompact"][0]["hooks"][0]["command"]
+    start = cfg["SessionStart"][0]
+    assert start["matcher"] == "compact" and "session_start.py" in start["hooks"][0]["command"]

@@ -4,6 +4,12 @@
 
 An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, and — bridged, see below — Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local and deterministic at its core, no API keys — the one exception is the Design bridge, which needs Google Drive since Design has no local access.
 
+**New in v3.8:**
+- 🛡️ **Compaction shield** — Claude Code no longer forgets your requests, open tasks and project rules after `/compact` ([details](#compaction-shield-claude-code)).
+- 🧾 **"Why did we do this?"** — the decisions behind any line or function: `router_checkpoint action=why ref=src/auth.py:120`.
+- 📊 **Shareable savings card** — a 1200×630 image of what the MCP saved you this week, with no file or project names in it.
+- 🔀 **Any MCP agent** — the same memory for Cursor, Codex, Gemini CLI, VS Code / Copilot, Windsurf… ([setup](#other-agents-cursor-codex-gemini-cli-vs-code--copilot-windsurf)).
+
 ## What this actually does (in plain English)
 
 Claude forgets everything the moment a conversation ends, and it can't share anything between its different apps — what you told Claude Code doesn't exist for Claude Desktop. This project fixes that by keeping a small memory file on your own computer, shared by every Claude app you use.
@@ -99,6 +105,16 @@ When closing a long task (or when context is filling up), Claude saves the state
 | `symbol_missing` | the function/class isn't in any of the files that had it (renamed or removed?) |
 
 If anything fails, the payload carries a `memory_warning` telling Claude to verify before trusting the summary and decisions. References that were already false when saving are never anchored, so they can't become false alarms. Checkpoints saved before v3.6 get a conservative check (absolute paths that no longer exist).
+
+**"Why did we do this?" (`action="why"`):** like `git blame`, but for the decisions you made with your agent.
+
+```
+checkpoint(action="why", ref="src/auth.py:120")   # also "src/auth.py" or "validate_token()"
+→ the checkpoints whose anchors point at that line (±20), then those that tracked or mentioned the file,
+  with their decisions; completed inbox orders that mention it; and the project's rules
+```
+
+Every matching checkpoint is checked against today's code: if the line it cited changed, the entry says `still_valid: false` with the `drift`, so an old decision isn't applied blindly.
 
 **Cold start (no checkpoints saved):** `resume` never returns empty-handed. If nobody saved a checkpoint, it reconstructs a deterministic digest from the ledger and inbox — the last files touched (and whether they changed on disk since), plus recently completed orders. The payload declares `"mode": "reconstructed_activity"` explicitly: it's an activity trace, **not** an intentional checkpoint, and contains no architectural decisions.
 
@@ -212,7 +228,7 @@ Distinct from the *task state* a checkpoint captures, a rule is a **permanent** 
 | Ingesting dirty HTML/web content | 40-60% | 100% (only noise removed) |
 | Normal conversational chat | ~0% | — |
 
-The fixed overhead is **~4,500 tokens** (server instructions + the six tool schemas, measured by the server itself) for every conversation that loads the MCP. If you're not processing large files or re-reading them across sessions, that's your net cost: be honest with yourself about your use case. The daily report below does this math for you.
+The fixed overhead is **~4,700 tokens** (server instructions + the six tool schemas, measured by the server itself) for every conversation that loads the MCP. If you're not processing large files or re-reading them across sessions, that's your net cost: be honest with yourself about your use case. The daily report below does this math for you.
 
 ### Daily savings report
 
@@ -230,6 +246,28 @@ Yesterday (09:12–18:40, claude-code + claude-ai)
 ```
 
 It reports tokens, not time or money: those can't be measured honestly from here. If a period cost more than it saved, the report says so.
+
+**Shareable card.** Add `card=true` (and `lang="en"|"es"`) to a report and the MCP writes a 1200×630 card to `~/.claude-continuity/cards/`: an `.svg` plus an `.html` with a **Download PNG** button (X, Reddit and LinkedIn don't take SVG). It's built for posting, so it never includes file names, paths or project names, only aggregate numbers and the agents you used. Same honesty rule: net of the fixed cost, and it says so if the MCP didn't pay off.
+
+## Compaction shield (Claude Code)
+
+When Claude Code compacts the context (automatically or with `/compact`), the model loses the thread: your latest requests, the files it was editing, open tasks, and often the project rules. Two hooks fix that without relying on the model to remember anything:
+
+1. **`PreCompact`** → reads the session transcript and saves a checkpoint (`autocompact-<session>`): your last requests, the files edited, the unfinished todos. Extracted deterministically, never summarized by an LLM. The last 10 are kept.
+2. **`SessionStart` (matcher `compact`)** → right after compaction, injects that checkpoint plus the project's permanent rules back into the new context.
+
+The plugin ships both hooks (`hooks/hooks.json`, run with `uv`). For a manual install, add to `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "python /path/to/claude-continuity-mcp/hooks/pre_compact.py" }] }],
+    "SessionStart": [{ "matcher": "compact", "hooks": [{ "type": "command", "command": "python /path/to/claude-continuity-mcp/hooks/session_start.py" }] }]
+  }
+}
+```
+
+Both hooks fail silently: whatever happens, they never block or break your session. Shielded compactions are counted in the savings report. Hooks are a Claude Code feature; other clients don't have them.
 
 ## Installation
 
@@ -263,6 +301,22 @@ claude mcp add project-continuity --scope user -- uvx --from git+https://github.
 **Where the memory lives:** `~/.claude-continuity/` (ledger, inbox, checkpoints and the optional `router_config.json`), shared by every client. Set `CLAUDE_CONTINUITY_HOME` to put it elsewhere. Git-clone installs from before v3.5 that already have a `cache/` folder next to `server.py` keep using it, so nothing moves.
 
 The skill on its own lives in [`skills/project-continuity/SKILL.md`](skills/project-continuity/SKILL.md) — copy it to `~/.claude/skills/` if you install the server manually.
+
+### Other agents (Cursor, Codex, Gemini CLI, VS Code / Copilot, Windsurf)
+
+It's a standard MCP server, so any MCP client can share the same memory: start a task in Claude Code, continue it in Cursor, leave an order for Codex. Each agent is identified automatically from the MCP handshake (`claude-code` → `code`, `Cursor` → `cursor`, `codex-mcp-client` → `codex`…), so inbox orders and rules record who did what without configuration.
+
+The command is always the same: `uvx --from git+https://github.com/gabicacabelos/claude-continuity-mcp claude-continuity-mcp`.
+
+| Agent | Config file | Format |
+|---|---|---|
+| Cursor | `~/.cursor/mcp.json` | `{"mcpServers": {"project-continuity": {"command": "uvx", "args": [...]}}}` |
+| Gemini CLI | `~/.gemini/settings.json` | `{"mcpServers": {"project-continuity": {"command": "uvx", "args": [...]}}}` |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` | `{"mcpServers": {"project-continuity": {"command": "uvx", "args": [...]}}}` |
+| VS Code / Copilot | `.vscode/mcp.json` | `{"servers": {"project-continuity": {"type": "stdio", "command": "uvx", "args": [...]}}}` |
+| Codex CLI | `~/.codex/config.toml` | `[mcp_servers.project-continuity]` with `command = "uvx"` and `args = [...]` |
+
+`args` is `["--from", "git+https://github.com/gabicacabelos/claude-continuity-mcp", "claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
 
 ### Manual install (git clone)
 

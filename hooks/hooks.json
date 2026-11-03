@@ -1,0 +1,28 @@
+{
+  "description": "Escudo de compactación: checkpoint automático antes de /compact y contexto restaurado después.",
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/pre_compact.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -20,6 +20,8 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from .clients import friendly
+
 CONTEXT_WINDOW = 200_000
 RETENTION_DAYS = 120
 MAX_SESSION_LOOKBACK_S = 3 * 24 * 3600
@@ -39,6 +41,7 @@ COUNT_KINDS = {
     "checkpoint_saved": "checkpoints_saved",
     "order_sent": "orders_sent",
     "order_done": "orders_done",
+    "compaction_shielded": "compactions_shielded",
 }
 
 
@@ -137,13 +140,13 @@ def build_report(events: list[dict]) -> dict | None:
     net = gross - overhead
     report = {
         "period": {"from": _fmt(events[0]["ts"]), "to": _fmt(events[-1]["ts"])},
-        "clients": sorted(clients),
+        "clients": sorted({friendly(c) for c in clients}),
         "tokens_kept_out_gross": gross,
         "overhead_tokens": overhead,
         "tokens_saved_net": net,
         "context_windows_200k": round(net / CONTEXT_WINDOW, 2) if net > 0 else 0,
         "by_mechanism": [
-            {"how": READ_KINDS[k], "count": count_by_kind[k], "tokens": s, "pct": round(100 * s / gross)}
+            {"kind": k, "how": READ_KINDS[k], "count": count_by_kind[k], "tokens": s, "pct": round(100 * s / gross)}
             for k, s in saved_by_kind.most_common() if s > 0
         ],
         "reads": sum(count_by_kind[k] for k in READ_KINDS),
