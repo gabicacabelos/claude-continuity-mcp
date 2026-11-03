@@ -1582,7 +1582,7 @@ def _run_hook(payload: dict, db_path, monkeypatch_env=None):
     if monkeypatch_env:
         env.update(monkeypatch_env)
     src = hook.read_text(encoding="utf-8").replace(
-        'DB_PATH = Path(__file__).resolve().parent.parent / "cache" / "ledger.db"',
+        'DB_PATH = _DATA_DIR / "cache" / "ledger.db"',
         f'DB_PATH = Path(r"{db_path}")',
     )
     tmp_hook = Path(db_path).parent / "_hook_under_test.py"
@@ -1612,7 +1612,7 @@ def test_hook_is_silent_on_garbage_input(tmp_path):
     import subprocess
     hook = Path(__file__).parent.parent / "hooks" / "capture_read.py"
     src = hook.read_text(encoding="utf-8").replace(
-        'DB_PATH = Path(__file__).resolve().parent.parent / "cache" / "ledger.db"',
+        'DB_PATH = _DATA_DIR / "cache" / "ledger.db"',
         f'DB_PATH = Path(r"{db}")',
     )
     tmp_hook = tmp_path / "_hook_garbage.py"

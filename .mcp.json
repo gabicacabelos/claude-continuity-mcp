@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "project-continuity": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/gabicacabelos/claude-continuity-mcp",
+        "claude-continuity-mcp"
+      ]
+    }
+  }
+}

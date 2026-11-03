@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-continuity-mcp"
+dynamic = ["version"]
+description = "Persistent, shared memory for Claude across sessions and clients (Code, Desktop, Cowork) - deterministic diff reads, checkpoints and cross-client task handoff. 100% local, no API keys."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Gabriel Cacabelos" }]
+keywords = ["mcp", "mcp-server", "claude", "claude-code", "memory", "context", "agents"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development",
+]
+# Con techo de versión, igual que requirements.txt: una major nueva puede romper el server.
+dependencies = [
+    "mcp>=1.0.0,<2.0.0",
+    "pydantic>=2.0.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+semantic = ["fastembed"]
+dev = ["pytest>=8.0.0"]
+
+[project.scripts]
+claude-continuity-mcp = "server:main"
+
+[project.urls]
+Homepage = "https://github.com/gabicacabelos/claude-continuity-mcp"
+Issues = "https://github.com/gabicacabelos/claude-continuity-mcp/issues"
+
+[tool.hatch.version]
+path = "server.py"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["server.py", "router"]

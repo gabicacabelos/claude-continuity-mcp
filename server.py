@@ -65,14 +65,35 @@ from router.safety import PathNotAllowed, check_path, redact_secrets
 
 _server_dir = Path(__file__).parent
 
+
+def _resolve_data_dir() -> Path:
+    """
+    Dónde vive la memoria (ledger, inbox, checkpoints, router_config.json).
+    Instalado con uvx/pipx, el código queda en un venv descartable: guardar la
+    memoria ahí la perdería en cada upgrade. Orden:
+      1. CLAUDE_CONTINUITY_HOME si está seteada.
+      2. Junto al código si ya existe cache/ ahí (instalaciones git-clone previas
+         a v3.5 — no les movemos la memoria de lugar).
+      3. ~/.claude-continuity
+    """
+    env = os.getenv("CLAUDE_CONTINUITY_HOME", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if (_server_dir / "cache").is_dir():
+        return _server_dir
+    return Path.home() / ".claude-continuity"
+
+
+_data_dir = _resolve_data_dir()
+
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("individra-mcp")
 
-ledger = FileLedger(db_path=str(_server_dir / "cache" / "ledger.db"))
-inbox = Inbox(db_path=str(_server_dir / "cache" / "inbox.db"))
+ledger = FileLedger(db_path=str(_data_dir / "cache" / "ledger.db"))
+inbox = Inbox(db_path=str(_data_dir / "cache" / "inbox.db"))
 
 def _code_staleness(boot_time: float) -> dict | None:
     """
@@ -102,7 +123,7 @@ def _code_staleness(boot_time: float) -> dict | None:
     except Exception as e:
         logger.warning(f"chequeo de staleness falló: {e}")
         return None
-_checkpoints_dir = _server_dir / "checkpoints"
+_checkpoints_dir = _data_dir / "checkpoints"
 
 _stats = {
     "start_time": time.time(),
@@ -113,7 +134,7 @@ _stats = {
     "diff_reads": 0,
 }
 
-VERSION = "3.4.1"
+VERSION = "3.5.0"
 
 # Umbral: archivos por debajo se devuelven enteros (el overhead de RAG no rinde)
 FULL_RETURN_MAX_TOKENS = 1500
@@ -123,7 +144,7 @@ FULL_RETURN_MAX_TOKENS = 1500
 # Si el archivo NO existe aplican estos defaults (zero-config). Si existe, se
 # re-parsea solo cuando cambia el mtime → ajustar un tunable NO pide reiniciar.
 
-_CONFIG_PATH = _server_dir / "router_config.json"
+_CONFIG_PATH = _data_dir / "router_config.json"
 _CONFIG_DEFAULTS = {
     "full_return_max_tokens": FULL_RETURN_MAX_TOKENS,
     "default_top_k": 4,
@@ -1123,6 +1144,11 @@ def prompt_inbox() -> str:
 # Entry point
 # ─────────────────────────────────────────────
 
-if __name__ == "__main__":
-    logger.info(f"INDIVIDRA MCP v{VERSION} — memoria y continuidad para Claude ✓")
+def main() -> None:
+    """Entry point del script `claude-continuity-mcp` (uvx/pipx) y de `python server.py`."""
+    logger.info(f"INDIVIDRA MCP v{VERSION} — memoria y continuidad para Claude ✓ (datos en {_data_dir})")
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,12 @@
+{
+  "name": "project-continuity",
+  "owner": { "name": "Gabriel Cacabelos" },
+  "description": "Persistent, shared project memory for Claude (claude-continuity-mcp).",
+  "plugins": [
+    {
+      "name": "project-continuity",
+      "source": "./",
+      "description": "Persistent, shared project memory for Claude across sessions and clients. 100% local, no API keys."
+    }
+  ]
+}

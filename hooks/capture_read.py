@@ -49,7 +49,16 @@ BUSY_TIMEOUT_MS = 100
 # file_path de `tool_input`, así que leemos un prefijo acotado y nada más.
 MAX_STDIN_BYTES = 256_000
 
-DB_PATH = Path(__file__).resolve().parent.parent / "cache" / "ledger.db"
+# Misma resolución que _resolve_data_dir() en server.py (duplicada a propósito:
+# el hook no puede pagar el import del server en el camino crítico).
+_REPO_DIR = Path(__file__).resolve().parent.parent
+if os.environ.get("CLAUDE_CONTINUITY_HOME", "").strip():
+    _DATA_DIR = Path(os.environ["CLAUDE_CONTINUITY_HOME"].strip()).expanduser()
+elif (_REPO_DIR / "cache").is_dir():
+    _DATA_DIR = _REPO_DIR
+else:
+    _DATA_DIR = Path.home() / ".claude-continuity"
+DB_PATH = _DATA_DIR / "cache" / "ledger.db"
 
 
 def _extract_path(event: dict) -> str | None:

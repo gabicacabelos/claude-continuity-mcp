@@ -195,15 +195,46 @@ The fixed overhead is ~500 tokens of tool definitions per session. If you're not
 
 ## Installation
 
+No API key or `.env` file needed: all six tools are 100% local. The one-line options need [uv](https://docs.astral.sh/uv/).
+
+**Claude Code — as a plugin (recommended):** installs the MCP server *and* a skill that tells Claude when to use each tool.
+
+```
+/plugin install project-continuity --marketplace gabicacabelos/claude-continuity-mcp
+```
+
+**Claude Code — server only:**
+
+```bash
+claude mcp add project-continuity --scope user -- uvx --from git+https://github.com/gabicacabelos/claude-continuity-mcp claude-continuity-mcp
+```
+
+**Claude Desktop / Cowork** — `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "project-continuity": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/gabicacabelos/claude-continuity-mcp", "claude-continuity-mcp"]
+    }
+  }
+}
+```
+
+**Where the memory lives:** `~/.claude-continuity/` (ledger, inbox, checkpoints and the optional `router_config.json`), shared by every client. Set `CLAUDE_CONTINUITY_HOME` to put it elsewhere. Git-clone installs from before v3.5 that already have a `cache/` folder next to `server.py` keep using it, so nothing moves.
+
+The skill on its own lives in [`skills/project-continuity/SKILL.md`](skills/project-continuity/SKILL.md) — copy it to `~/.claude/skills/` if you install the server manually.
+
+### Manual install (git clone)
+
 ```bash
 git clone https://github.com/gabicacabelos/claude-continuity-mcp.git && cd claude-continuity-mcp
 pip install -r requirements.txt
 # Optional (local semantic ranking for smart_read): pip install fastembed
 ```
 
-No API key or `.env` file needed: all six tools are 100% local.
-
-### Registering it across all your Claude sessions
+### Registering a manual install across all your Claude sessions
 
 **Claude Desktop / Cowork** — `claude_desktop_config.json`:
 
@@ -299,7 +330,7 @@ The hook is deliberately dumb: it does **one** INSERT into a staging table (`raw
 
 ## Hot configuration (`router_config.json`)
 
-Runtime tunables can be adjusted **without restarting the MCP**. Copy `router_config.example.json` to `router_config.json` (next to `server.py`, gitignored) and edit what you need — the next call to any tool picks it up (the file is only re-parsed when its modification time changes, near-zero overhead):
+Runtime tunables can be adjusted **without restarting the MCP**. Copy `router_config.example.json` to `router_config.json` (in the memory folder — `~/.claude-continuity/`, or next to `server.py` on legacy git-clone installs; gitignored) and edit what you need — the next call to any tool picks it up (the file is only re-parsed when its modification time changes, near-zero overhead):
 
 | Key | Default | What it controls |
 |---|---|---|
