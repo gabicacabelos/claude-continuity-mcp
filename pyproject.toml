@@ -37,5 +37,10 @@ Issues = "https://github.com/gabicacabelos/claude-continuity-mcp/issues"
 [tool.hatch.version]
 path = "server.py"
 
+# La versión y el código viven fuera de pyproject.toml: sin esto, `uvx --from .`
+# reusa una build vieja cacheada aunque server.py o router/ hayan cambiado.
+[tool.uv]
+cache-keys = [{ file = "pyproject.toml" }, { file = "server.py" }, { file = "router/*.py" }]
+
 [tool.hatch.build.targets.wheel]
 only-include = ["server.py", "router"]

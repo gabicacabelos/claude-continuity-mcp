@@ -7,5 +7,9 @@
   "full_return_max_tokens": 1500,
   "default_top_k": 4,
   "diff_max_ratio": 0.6,
-  "cache_enabled": true
+  "cache_enabled": true,
+
+  "_auto_report": "OPT-IN (apagado por defecto). Si lo activás, al volver tras una pausa de report_gap_hours (1-48) o más, la primera respuesta trae el reporte de ahorro de la jornada anterior. Apagado = solo el reporte manual (/report).",
+  "auto_report": false,
+  "report_gap_hours": 6
 }

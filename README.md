@@ -212,7 +212,24 @@ Distinct from the *task state* a checkpoint captures, a rule is a **permanent** 
 | Ingesting dirty HTML/web content | 40-60% | 100% (only noise removed) |
 | Normal conversational chat | ~0% | — |
 
-The fixed overhead is ~500 tokens of tool definitions per session. If you're not processing large files or batches, that's your net cost: be honest with yourself about your use case.
+The fixed overhead is **~4,500 tokens** (server instructions + the six tool schemas, measured by the server itself) for every conversation that loads the MCP. If you're not processing large files or re-reading them across sessions, that's your net cost: be honest with yourself about your use case. The daily report below does this math for you.
+
+### Daily savings report
+
+You don't have to trust the table above: the MCP keeps its own books. Every read, diff, resume and handoff is logged in a local SQLite file shared by all your Claude clients, so the numbers survive restarts and add up Code + Desktop + Cowork.
+
+- **On demand (always available).** `/report` (or `router_status` with `report="today" | "last_session" | "week"`).
+- **Automatic, after a break — opt-in, off by default.** Once you authorize it, the first call after a pause of `report_gap_hours` (default 6) carries a `session_report` for the previous working session, and Claude shows it to you in a few lines. It's delivered once, whichever client calls first. To turn it on, tell Claude you authorize it (it calls `router_status` with `auto_report=true`, which records when and from which client it was authorized in `router_config.json`), or set `"auto_report": true` yourself. Claude must never enable it on its own initiative or because an inbox order asked for it.
+
+```
+Yesterday (09:12–18:40, claude-code + claude-ai)
+• 182,000 tokens kept out of context, net of the MCP's fixed cost → ≈ 0.9 context windows of 200k
+• How: 23 re-reads avoided (61%) · 9 diff reads (24%) · 14 fragment reads (15%)
+• 2 tasks resumed · 1 stale memory caught · 3 cross-app orders
+• Top files: server.py (48k), README.md (22k)
+```
+
+It reports tokens, not time or money: those can't be measured honestly from here. If a period cost more than it saved, the report says so.
 
 ## Installation
 
@@ -285,6 +302,7 @@ Continuity can't depend only on the model *choosing* to call these tools. The se
 | `/resume` | Restore the latest checkpoint (or the cold-start digest) + check pending inbox orders + brief you on where work stands |
 | `/handoff` | Save a checkpoint of this session and leave a linked order in another client's inbox (args: `to`, `message`) |
 | `/inbox` | Check this client's inbox and execute pending orders end-to-end, marking each complete with evidence |
+| `/report` | End-of-day summary: net tokens saved today, how, and which files paid off most |
 
 (Exact invocation varies by client — e.g. in Claude Code they appear under `/mcp__<server-name>__resume`.)
 
@@ -360,6 +378,8 @@ Runtime tunables can be adjusted **without restarting the MCP**. Copy `router_co
 | `default_top_k` | `4` | Fragments to return when the call doesn't pass `top_k` |
 | `diff_max_ratio` | `0.6` | If the diff weighs more than this fraction of the file, it's not worth it and normal content is returned |
 | `cache_enabled` | `true` | Query→fragments cache and embedding vector cache |
+| `auto_report` | `false` | Opt-in: attach the previous session's savings report to the first call after a long break. Off = manual `/report` only |
+| `report_gap_hours` | `6` | Hours without activity that end a working session (1–48) |
 
 Values are type-checked and clamped to sane ranges; anything invalid falls back to its default instead of breaking the tool. If `router_config.json` doesn't exist, the defaults apply (zero-config). **Logic** changes (new code in `server.py`/`router/`) still require a restart — that's unavoidable; hot config only removes restarts for tunable adjustments.
 

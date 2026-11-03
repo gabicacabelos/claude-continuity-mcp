@@ -1961,3 +1961,152 @@ def test_project_search_scope_all_respects_allowed_roots(server_module, tmp_path
     r = _project_search(server_module, scope="all", query="tenant isolation policy")
     assert all(c["project"] != str(a.resolve()) for c in r["code"])
     led.close()
+
+
+# ─── métricas persistentes y reporte de jornada ───────────────────────────────
+# Lo que ahorró el MCP tiene que sobrevivir a reinicios y sumar todos los
+# clientes. Al volver tras una pausa larga, la primera respuesta trae el
+# reporte de la jornada anterior — una sola vez, y con el costo fijo descontado.
+
+from router.metrics import Metrics, build_report
+
+H = 3600
+
+
+@pytest.fixture
+def metrics_db(tmp_path):
+    m = Metrics(str(tmp_path / "metrics.db"))
+    yield m
+    m.close()
+
+
+def _seed_day(m, start):
+    m.record("boot", tokens_delivered=1_000, client="claude-code", ts=start)
+    m.record("unchanged", tokens_source=10_000, tokens_delivered=50, ref="/p/server.py", ts=start + 60)
+    m.record("diff", tokens_source=8_000, tokens_delivered=400, ref="/p/README.md", ts=start + 2 * H)
+    m.record("chunks", tokens_source=5_000, tokens_delivered=1_000, ref="/p/server.py", ts=start + 4 * H)
+    m.record("resume", ref="auth", ts=start + 5 * H)
+
+
+def test_report_is_net_of_overhead_with_breakdown(metrics_db):
+    _seed_day(metrics_db, 1_000_000)
+    r = build_report(metrics_db.events_between(0, 2_000_000))
+    assert r["tokens_kept_out_gross"] == 9_950 + 7_600 + 4_000
+    assert r["overhead_tokens"] == 1_000
+    assert r["tokens_saved_net"] == 21_550 - 1_000
+    assert r["rereads_avoided"] == 1 and r["resumes"] == 1
+    hows = [m["how"] for m in r["by_mechanism"]]
+    assert hows[0] == "re-lecturas evitadas", "ordenado por tokens ahorrados"
+    assert sum(m["pct"] for m in r["by_mechanism"]) in (99, 100, 101)
+    assert r["top_files"][0] == {"file": "server.py", "tokens": 9_950 + 4_000}
+    assert "claude-code" in r["clients"]
+    assert "note" not in r
+
+
+def test_report_is_honest_when_overhead_beats_savings(metrics_db):
+    metrics_db.record("boot", tokens_delivered=3_000, ts=100)
+    metrics_db.record("full", tokens_source=200, tokens_delivered=200, ref="/p/a.py", ts=200)
+    r = build_report(metrics_db.events_between(0, 1_000))
+    assert r["tokens_saved_net"] < 0
+    assert "costo fijo" in r["note"]
+
+
+def test_pending_report_after_gap_is_delivered_once(metrics_db):
+    _seed_day(metrics_db, 1_000_000)
+    last = 1_000_000 + 5 * H
+    assert metrics_db.take_pending_report(now=last + 2 * H, gap_s=6 * H) is None, "sin pausa larga no hay reporte"
+    evs = metrics_db.take_pending_report(now=last + 7 * H, gap_s=6 * H)
+    assert evs and len(evs) == 5
+    assert metrics_db.take_pending_report(now=last + 8 * H, gap_s=6 * H) is None, "una sola vez"
+
+
+def test_pending_report_covers_only_the_last_working_session(metrics_db):
+    _seed_day(metrics_db, 1_000_000)                  # jornada vieja
+    metrics_db.record("unchanged", tokens_source=500, tokens_delivered=10, ts=1_000_000 + 30 * H)  # jornada nueva
+    evs = metrics_db.take_pending_report(now=1_000_000 + 40 * H, gap_s=6 * H)
+    assert len(evs) == 1
+
+
+@pytest.fixture
+def server_metrics(server_module, tmp_path, monkeypatch, config_at):
+    m = Metrics(str(tmp_path / "srv_metrics.db"))
+    monkeypatch.setattr(server_module, "metrics", m)
+    monkeypatch.setattr(server_module, "_metrics_state", {"booted": False, "pending_report": None})
+    yield m
+    m.close()
+
+
+def _status(server_module, **kw) -> dict:
+    return json.loads(asyncio.run(server_module.router_status(server_module.StatusInput(**kw))))
+
+
+def test_smart_read_events_are_persisted(server_module, server_metrics, tmp_path, monkeypatch):
+    led = FileLedger(str(tmp_path / "m.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    f = tmp_path / "grande.py"
+    f.write_text("x = 1\n" * 3000, encoding="utf-8")
+    _smart_read(server_module, file_path=str(f))
+    _smart_read(server_module, file_path=str(f))      # segunda vez: unchanged
+    kinds = [e["kind"] for e in server_metrics.events_between(0, time.time() + 1)]
+    assert kinds[0] == "boot" and "map" in kinds and "unchanged" in kinds
+    led.close()
+
+
+def test_auto_report_is_off_by_default_only_manual(server_module, server_metrics, config_at):
+    assert server_module._load_config()["auto_report"] is False, "el aviso automático requiere autorización"
+    _seed_day(server_metrics, time.time() - 20 * H)
+    assert "session_report" not in _status(server_module)
+    assert _status(server_module, report="last_session")["report"] is not None, "el manual sigue disponible"
+
+
+def test_first_call_after_a_long_break_carries_the_report_once(server_module, server_metrics, config_at):
+    config_at.write_text(json.dumps({"auto_report": True}), encoding="utf-8")
+    _seed_day(server_metrics, time.time() - 20 * H)
+    first = _status(server_module)
+    assert first["session_report"]["tokens_saved_net"] == 20_550
+    assert "mostrale" in first["session_report"]["instruction"].lower()
+    assert "session_report" not in _status(server_module), "se entrega una sola vez"
+
+
+def test_auto_report_toggle_persists_authorization(server_module, server_metrics, config_at):
+    on = _status(server_module, auto_report=True)
+    assert on["auto_report"]["enabled"] is True
+    saved = json.loads(config_at.read_text(encoding="utf-8"))
+    assert saved["auto_report"] is True and saved["_auto_report_authorized"], "queda registro de cuándo se autorizó"
+    # Vale para las próximas pausas (el reparto tras la pausa lo cubre otro test)
+    assert server_module._load_config()["auto_report"] is True
+
+    off = _status(server_module, auto_report=False)
+    assert off["auto_report"]["enabled"] is False
+    assert json.loads(config_at.read_text(encoding="utf-8"))["auto_report"] is False
+
+
+def test_auto_report_toggle_keeps_other_config_keys(server_module, server_metrics, config_at):
+    config_at.write_text(json.dumps({"default_top_k": 7}), encoding="utf-8")
+    _status(server_module, auto_report=True)
+    saved = json.loads(config_at.read_text(encoding="utf-8"))
+    assert saved["default_top_k"] == 7 and saved["auto_report"] is True
+
+
+def test_manual_report_mentions_automatic_option_when_off(server_module, server_metrics, config_at):
+    _seed_day(server_metrics, time.time() - 3 * H)
+    r = _status(server_module, report="last_session")
+    assert "autoriz" in r["auto_report_hint"]
+    config_at.write_text(json.dumps({"auto_report": True}), encoding="utf-8")
+    assert "auto_report_hint" not in _status(server_module, report="last_session")
+
+
+def test_status_report_on_demand(server_module, server_metrics):
+    _seed_day(server_metrics, time.time() - 3 * 24 * H)
+    week = _status(server_module, report="week")
+    # el arranque de ESTE proceso también es costo fijo de la semana
+    boot = server_module._definitions_tokens()
+    assert week["report"]["tokens_kept_out_gross"] == 21_550
+    assert week["report"]["tokens_saved_net"] == 21_550 - 1_000 - boot
+    today = _status(server_module, report="today")
+    assert today["report"] is None or today["report"]["tokens_kept_out_gross"] == 0
+
+
+def test_report_prompt_points_to_status(server_module):
+    p = server_module.prompt_report()
+    assert "router_status" in p and "report" in p
