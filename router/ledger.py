@@ -331,6 +331,11 @@ class FileLedger:
         return [r[0] for r in self._db.execute(
             "SELECT path FROM project_index WHERE root=?", (root,)).fetchall()]
 
+    def indexed_roots(self) -> list[str]:
+        """Raíces de todos los proyectos indexados alguna vez (base de la búsqueda entre proyectos)."""
+        return [r[0] for r in self._db.execute(
+            "SELECT DISTINCT root FROM project_index ORDER BY root").fetchall()]
+
     # ─── Captura pasiva (hooks) ───────────────────────────────────────────────
 
     def drain_raw_reads(self, limit: int = 200, allowed_roots=None) -> int:

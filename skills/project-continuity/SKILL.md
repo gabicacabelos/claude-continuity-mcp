@@ -32,7 +32,10 @@ On a project you may have worked on before, before re-exploring files:
 1. `router_checkpoint` with `{"action": "resume"}` (add `name` if the user names a
    task). It returns the saved summary, decisions, open items and **which files changed
    since** — read only those. If there is no checkpoint it returns a cold-start digest
-   of recent activity.
+   of recent activity. If the result has a `memory_warning`, some references in the
+   checkpoint (file:line, function names) no longer match the code: look at
+   `verification.issues` and re-check those points before relying on the summary or
+   decisions. Tell the user what drifted.
 2. `router_inbox` with `{"action": "check", "to": "<you>"}` where `<you>` is your own
    client: `code`, `desktop`, `cowork` or `design`.
 
@@ -59,6 +62,11 @@ Use when you don't know which file holds something ("where are webhooks validate
 files with exact fragments. It is lexical (BM25): phrase the query with words likely
 to appear in the code. For an exact literal string, plain grep is still better.
 
+When the user asks how they solved something **in another project** ("how did I do
+RLS in the shop project?"), use `{"scope": "all", "query": "<concept>"}`: it searches
+saved checkpoints, project rules, completed inbox orders and the code of every project
+indexed so far, each result tagged with its project.
+
 ## Durable conventions: `router_rules`
 
 When the user states a rule that should hold for the whole project ("never use Redux",
@@ -82,6 +90,8 @@ When a long task ends, when the user pauses, or when your context is getting ful
 ```
 
 Write the summary for a reader with zero context: it is what the next session sees.
+Cite code precisely — `path/to/file.py:120` and function names in backticks: those
+references are anchored and checked against the code on the next `resume`.
 
 ## Handing work to another client: `router_inbox`
 

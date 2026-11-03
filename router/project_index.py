@@ -120,12 +120,41 @@ def search(ledger, root: str | Path, query: str, top_k: int = 5,
     Dos etapas: barato para descartar, preciso para mostrar.
     """
     root_key = str(Path(root).resolve())
-    docs = ledger.indexed_docs(root_key)
-    if not docs:
-        return []
+    scored = bm25_rank(ledger.indexed_docs(root_key), query)
+    return [_with_fragments(path, score, query, fragments_per_file)
+            for score, path in scored[:top_k]]
 
+
+def search_all(ledger, query: str, top_k: int = 5, fragments_per_file: int = 1,
+               allowed_roots=None) -> list[dict]:
+    """
+    Como search(), pero sobre TODOS los proyectos indexados: "¿cómo resolví X
+    en el otro proyecto?". No re-indexa (los otros proyectos pueden no estar
+    a mano); los archivos borrados desde la indexación se saltean.
+    """
+    owner: dict[str, str] = {}
+    docs: list[tuple[str, list[str]]] = []
+    for root in ledger.indexed_roots():
+        for path, toks in ledger.indexed_docs(root):
+            if allowed_roots and not is_allowed(path, allowed_roots):
+                continue
+            owner[path] = root
+            docs.append((path, toks))
+
+    results = []
+    for score, path in bm25_rank(docs, query):
+        if len(results) >= top_k:
+            break
+        if not Path(path).is_file():
+            continue
+        results.append({"project": owner[path], **_with_fragments(path, score, query, fragments_per_file)})
+    return results
+
+
+def bm25_rank(docs: list[tuple[str, list[str]]], query: str) -> list[tuple[float, str]]:
+    """(score, clave) de los docs [(clave, tokens)] con score > 0, de mayor a menor."""
     q_tokens = tokenize(query)
-    if not q_tokens:
+    if not docs or not q_tokens:
         return []
 
     n_docs = len(docs)
@@ -152,19 +181,20 @@ def search(ledger, root: str | Path, query: str, top_k: int = 5,
             scored.append((s, path))
 
     scored.sort(reverse=True)
-    results = []
-    for score, path in scored[:top_k]:
-        entry = {"file": path, "score": round(score, 4), "fragments": []}
-        try:
-            raw = Path(path).read_text(encoding="utf-8", errors="replace")
-            content, _ = sanitize_file_content(raw, path)
-            content, _ = redact_secrets(content)  # fragmentos devueltos, no exponer secretos
-            top, _engine = rank_chunks(content, query, top_k=fragments_per_file)
-            entry["fragments"] = [
-                {"lines": f"{c.start_line}-{c.end_line}", "text": c.text}
-                for c in top
-            ]
-        except Exception as e:
-            entry["fragments_error"] = str(e)[:120]
-        results.append(entry)
-    return results
+    return scored
+
+
+def _with_fragments(path: str, score: float, query: str, fragments_per_file: int) -> dict:
+    entry = {"file": path, "score": round(score, 4), "fragments": []}
+    try:
+        raw = Path(path).read_text(encoding="utf-8", errors="replace")
+        content, _ = sanitize_file_content(raw, path)
+        content, _ = redact_secrets(content)  # fragmentos devueltos, no exponer secretos
+        top, _engine = rank_chunks(content, query, top_k=fragments_per_file)
+        entry["fragments"] = [
+            {"lines": f"{c.start_line}-{c.end_line}", "text": c.text}
+            for c in top
+        ]
+    except Exception as e:
+        entry["fragments_error"] = str(e)[:120]
+    return entry

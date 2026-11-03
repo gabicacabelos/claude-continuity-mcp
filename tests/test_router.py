@@ -1771,3 +1771,179 @@ def test_hook_discards_silently_when_db_is_locked(tmp_path):
         blocker.rollback()
         blocker.close()
     led.close()
+
+
+# ─── verify: la memoria se contrasta con el código antes de confiar en ella ───
+# Un checkpoint dice "la validación está en `auth.py:3`" — si el código cambió,
+# esa memoria miente. build_anchors() fotografía las referencias al guardar y
+# verify_anchors() las contrasta al retomar.
+
+from router import verify as V
+
+
+def _auth_proj(tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "router").mkdir(parents=True)
+    f = proj / "router" / "auth.py"
+    f.write_text("import os\n\ndef validate_token(t):\n    return t == os.getenv('T')\n", encoding="utf-8")
+    return proj, f
+
+
+def test_verify_line_ref_unchanged_has_no_issues(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors([f"la validación está en `{f}:3`"], [str(f)])
+    assert any(a.get("line") == 3 for a in anchors)
+    assert V.verify_anchors(anchors)["issues"] == []
+
+
+def test_verify_detects_line_moved(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors([f"ver `{f}:3`"], [str(f)])
+    f.write_text("# header\n# header 2\n" + f.read_text(encoding="utf-8"), encoding="utf-8")
+    issues = V.verify_anchors(anchors)["issues"]
+    assert issues and issues[0]["issue"] == "line_moved" and issues[0]["now_line"] == 5
+
+
+def test_verify_detects_line_changed(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors([f"ver `{f}:3`"], [str(f)])
+    f.write_text("import os\n\ndef check(t):\n    return True\n", encoding="utf-8")
+    kinds = {i["issue"] for i in V.verify_anchors(anchors)["issues"]}
+    assert "line_changed" in kinds
+
+
+def test_verify_detects_file_missing(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors([f"ver `{f}:3`"], [str(f)])
+    f.unlink()
+    assert V.verify_anchors(anchors)["issues"][0]["issue"] == "file_missing"
+
+
+def test_verify_detects_symbol_renamed_and_keeps_present_symbol(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors(["usa `validate_token()` para el login"], [str(f)])
+    assert any(a.get("symbol") == "validate_token" for a in anchors)
+    assert V.verify_anchors(anchors)["issues"] == []
+    f.write_text(f.read_text(encoding="utf-8").replace("validate_token", "check_token"), encoding="utf-8")
+    issues = V.verify_anchors(anchors)["issues"]
+    assert issues and issues[0]["issue"] == "symbol_missing" and issues[0]["ref"] == "validate_token"
+
+
+def test_verify_resolves_relative_ref_against_tracked_files(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors(["el bug estaba en router/auth.py:3"], [str(f)])
+    assert any(a.get("path") == str(f) and a.get("line") == 3 for a in anchors)
+
+
+def test_verify_handles_backticked_path_with_spaces(tmp_path):
+    d = tmp_path / "Practical Tecno" / "app"
+    d.mkdir(parents=True)
+    f = d / "main.py"
+    f.write_text("a = 1\nb = 2\n", encoding="utf-8")
+    anchors = V.build_anchors([f"ver `{f}:2`"], [])
+    assert any(a.get("path") == str(f) and a.get("line") == 2 for a in anchors)
+
+
+def test_verify_does_not_anchor_refs_that_were_already_false_at_save(tmp_path):
+    _, f = _auth_proj(tmp_path)
+    anchors = V.build_anchors(["ver `no/existe.py:9` y `simbolo_inexistente()`"], [str(f)])
+    assert anchors == [], "lo que ya era falso al guardar no puede volverse una alarma"
+
+
+def test_verify_legacy_flags_missing_absolute_path(tmp_path):
+    gone = tmp_path / "borrado.py"
+    res = V.verify_legacy([f"el fix está en `{gone}`"], [])
+    assert res["issues"] and res["issues"][0]["issue"] == "file_missing"
+
+
+def test_checkpoint_resume_reports_stale_memory(server_module, tmp_path, monkeypatch):
+    monkeypatch.setattr(server_module, "_checkpoints_dir", tmp_path / "cps")
+    _, f = _auth_proj(tmp_path)
+    _checkpoint(server_module, action="save", name="auth",
+                summary=f"login validado en `{f}:3` vía `validate_token()`",
+                files=[str(f)])
+    fresh = _checkpoint(server_module, action="resume", name="auth")
+    assert fresh["verification"]["issues"] == []
+    assert "memory_warning" not in fresh
+
+    f.write_text("import os\n\ndef check_token(t):\n    return True\n", encoding="utf-8")
+    r = _checkpoint(server_module, action="resume", name="auth")
+    kinds = {i["issue"] for i in r["verification"]["issues"]}
+    assert {"line_changed", "symbol_missing"} <= kinds
+    assert "verific" in r["memory_warning"]
+
+
+# ─── búsqueda entre proyectos: "¿cómo resolví X en el otro proyecto?" ─────────
+
+def _two_projects(tmp_path):
+    a = tmp_path / "shop"; a.mkdir()
+    b = tmp_path / "erp"; b.mkdir()
+    (a / "tenant.sql").write_text(
+        "create policy tenant_isolation on orders using (tenant_id = auth.jwt() ->> 'tenant');\n",
+        encoding="utf-8")
+    (b / "billing.py").write_text(
+        "def invoice_total(items):\n    return sum(i.price for i in items)\n", encoding="utf-8")
+    return a, b
+
+
+def test_search_all_spans_every_indexed_project(ledger, tmp_path):
+    from router import project_index as PI
+    a, b = _two_projects(tmp_path)
+    PI.build_index(ledger, a); PI.build_index(ledger, b)
+    res = PI.search_all(ledger, "tenant isolation policy")
+    assert res and res[0]["project"] == str(a.resolve())
+    assert res[0]["file"].endswith("tenant.sql")
+    res2 = PI.search_all(ledger, "invoice total")
+    assert res2[0]["project"] == str(b.resolve())
+
+
+def test_search_all_skips_files_deleted_since_indexing(ledger, tmp_path):
+    from router import project_index as PI
+    a, _ = _two_projects(tmp_path)
+    PI.build_index(ledger, a)
+    (a / "tenant.sql").unlink()
+    assert PI.search_all(ledger, "tenant isolation policy") == []
+
+
+def test_project_search_scope_all_returns_memory_and_code(server_module, tmp_path, monkeypatch):
+    from router import project_index as PI
+    led = FileLedger(str(tmp_path / "all.db"))
+    ib = Inbox(str(tmp_path / "all_inbox.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    monkeypatch.setattr(server_module, "inbox", ib)
+    monkeypatch.setattr(server_module, "_checkpoints_dir", tmp_path / "cps")
+    a, b = _two_projects(tmp_path)
+    PI.build_index(led, a); PI.build_index(led, b)
+    R.add_rule(a, "toda tabla multi-tenant lleva policy de tenant_isolation", source_client="code")
+    _checkpoint(server_module, action="save", name="rls",
+                summary="resolví el aislamiento multi-tenant con una policy RLS por tenant_id",
+                decisions=["tenant_id sale del JWT, nunca del body"])
+    oid = ib.send("auditar RLS multi-tenant", to_client="code")
+    ib.complete(oid, result="RLS tenant ok en orders")
+
+    r = _project_search(server_module, scope="all", query="multi-tenant tenant isolation RLS")
+    assert r["status"] == "results" and r["scope"] == "all"
+    types = {m["type"] for m in r["memory"]}
+    assert {"checkpoint", "rule", "order"} <= types
+    rule = next(m for m in r["memory"] if m["type"] == "rule")
+    assert rule["project"] == str(a.resolve())
+    assert r["code"] and r["code"][0]["project"] == str(a.resolve())
+    led.close(); ib.close()
+
+
+def test_project_search_scope_project_still_requires_project_dir(server_module):
+    r = _project_search(server_module, query="algo")
+    assert r["status"] == "error" and "project_dir" in r["reason"]
+
+
+def test_project_search_scope_all_respects_allowed_roots(server_module, tmp_path, monkeypatch, config_at):
+    from router import project_index as PI
+    led = FileLedger(str(tmp_path / "ar.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    monkeypatch.setattr(server_module, "_checkpoints_dir", tmp_path / "cps_ar")
+    a, b = _two_projects(tmp_path)
+    PI.build_index(led, a); PI.build_index(led, b)
+    config_at.write_text(json.dumps({"allowed_roots": [str(b)]}), encoding="utf-8")
+    r = _project_search(server_module, scope="all", query="tenant isolation policy")
+    assert all(c["project"] != str(a.resolve()) for c in r["code"])
+    led.close()

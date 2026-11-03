@@ -89,6 +89,17 @@ checkpoint(action="save", name="refactor-auth",
 
 When closing a long task (or when context is filling up), Claude saves the state as human-readable JSON in `checkpoints/` — editable by you, shareable with your team. A new session — on Desktop, Code, or Cowork, doesn't matter — calls `action="resume"` and recovers everything in ~300 tokens, **including which files changed on disk since the checkpoint** (hash comparison, no re-reading). `action="list"` shows the available checkpoints.
 
+**Stale-memory check:** a memory that quotes old code is worse than no memory — the model repeats it with full confidence. When saving, the checkpoint anchors every reference in its text that is true *right now*: `src/auth.py:120` (with the exact text of that line) and code symbols in backticks like `` `validate_token()` `` (with the files that contain them). On `resume`, each anchor is checked against the current code and reported in `verification.issues`:
+
+| Issue | Meaning |
+|---|---|
+| `file_missing` | the referenced file no longer exists |
+| `line_moved` | the quoted line is still there, at `now_line` |
+| `line_changed` | the quoted line is gone — the claim may no longer hold |
+| `symbol_missing` | the function/class isn't in any of the files that had it (renamed or removed?) |
+
+If anything fails, the payload carries a `memory_warning` telling Claude to verify before trusting the summary and decisions. References that were already false when saving are never anchored, so they can't become false alarms. Checkpoints saved before v3.6 get a conservative check (absolute paths that no longer exist).
+
 **Cold start (no checkpoints saved):** `resume` never returns empty-handed. If nobody saved a checkpoint, it reconstructs a deterministic digest from the ledger and inbox — the last files touched (and whether they changed on disk since), plus recently completed orders. The payload declares `"mode": "reconstructed_activity"` explicitly: it's an activity trace, **not** an intentional checkpoint, and contains no architectural decisions.
 
 ### `router_inbox` — Cross-client orders
@@ -164,6 +175,16 @@ project_search(project_dir="/proj", query="where are webhook signatures validate
 - **Persistent and shared:** the index lives in the ledger, so it survives across sessions and clients. Grep starts from zero every time; this doesn't.
 - **Better than literal grep for concepts:** ranks by relevance and splits `snake_case`/`camelCase`, so "webhook retry" finds `handleWebhookRetry()`.
 - Deliberately bounded: skips `node_modules`, `.git`, `dist`, binaries and files >400KB. Deterministic, 100% local — exact fragments, never summaries.
+
+**Across all your projects (`scope="all"`):** *"how did I solve multi-tenant RLS in the other project?"*
+
+```
+project_search(scope="all", query="multi-tenant RLS policy")
+→ memory: matching checkpoints, project rules and completed inbox orders
+→ code:   matching files from every project indexed so far, each tagged with its project
+```
+
+Claude's native memory is scoped to one project; this searches everything the MCP has seen. It doesn't re-index the other projects (they might not be at hand) — it uses their last index, skips files deleted since, and respects `allowed_roots`.
 
 ### `router_rules` — Permanent project rules, with provenance
 
