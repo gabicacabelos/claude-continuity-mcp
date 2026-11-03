@@ -1897,6 +1897,20 @@ def test_search_all_spans_every_indexed_project(ledger, tmp_path):
     assert res2[0]["project"] == str(b.resolve())
 
 
+def test_generated_graphify_output_is_never_indexed_or_returned(ledger, tmp_path):
+    from router import project_index as PI
+    a, _ = _two_projects(tmp_path)
+    out = a / "graphify-out" / "2026-09-28"
+    out.mkdir(parents=True)
+    (out / "graph.json").write_text('{"source": "tenant isolation policy tenant"}', encoding="utf-8")
+    stats = PI.build_index(ledger, a)
+    assert stats["total_docs"] == 1, "graphify-out es salida generada, no código del proyecto"
+
+    # Índices viejos (de antes de esta exclusión) no deben colarse en scope=all
+    ledger.put_indexed(str(out / "graph.json"), str(a.resolve()), "h", ["tenant", "isolation", "policy"])
+    assert all("graphify-out" not in r["file"] for r in PI.search_all(ledger, "tenant isolation policy"))
+
+
 def test_search_all_skips_files_deleted_since_indexing(ledger, tmp_path):
     from router import project_index as PI
     a, _ = _two_projects(tmp_path)

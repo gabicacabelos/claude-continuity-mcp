@@ -39,6 +39,7 @@ SKIP_DIRS = {
     ".git", "node_modules", "__pycache__", ".venv", "venv", "env", "dist",
     "build", ".next", ".nuxt", "target", ".pytest_cache", ".mypy_cache",
     "vendor", ".idea", ".vscode", "coverage", ".tox", "site-packages",
+    "graphify-out",  # grafo generado por graphify: JSON enorme que empata con todo
 }
 
 MAX_FILE_BYTES = 400_000   # archivos gigantes no rinden en un índice léxico
@@ -137,6 +138,10 @@ def search_all(ledger, query: str, top_k: int = 5, fragments_per_file: int = 1,
     for root in ledger.indexed_roots():
         for path, toks in ledger.indexed_docs(root):
             if allowed_roots and not is_allowed(path, allowed_roots):
+                continue
+            # Los otros proyectos no se re-indexan acá: un índice viejo puede
+            # traer carpetas que hoy SKIP_DIRS excluye.
+            if any(part in SKIP_DIRS for part in Path(path).parts):
                 continue
             owner[path] = root
             docs.append((path, toks))
