@@ -17,6 +17,7 @@ retomar desde cualquier cliente con action=resume.
 """
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -30,6 +31,7 @@ MAX_PROMPT_CHARS = 400
 MAX_FILES = 15
 MAX_AUTO_CHECKPOINTS = 10
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+READ_TOOLS = {"Read"}
 PREFIX = "autocompact-"
 
 
@@ -41,15 +43,26 @@ def _texts(content) -> list[str]:
     return []
 
 
-def _is_human_prompt(text: str) -> bool:
-    """Lo que escribió la persona — no recordatorios ni etiquetas que inyecta el harness."""
-    t = text.strip()
-    return bool(t) and not t.startswith("<")
+_HARNESS_BLOCK = re.compile(r"<(system-reminder|command-[\w-]+|local-command-[\w-]+)>.*?</\1>", re.DOTALL)
+_PASTED = re.compile(r"<pasted_content[^>]*>(.*?)</pasted_content[^>]*>", re.DOTALL)
+
+
+def _human_prompt(text: str) -> str | None:
+    """
+    Lo que escribió la persona: sin los bloques que inyecta el harness
+    (recordatorios, comandos). Lo que pegó sí cuenta — es su pedido.
+    """
+    t = _HARNESS_BLOCK.sub("", text)
+    t = _PASTED.sub(lambda m: "[pegado] " + m.group(1).strip(), t).strip()
+    if not t or t.startswith("<"):
+        return None
+    return " ".join(t.split())[:MAX_PROMPT_CHARS]
 
 
 def extract_session_state(transcript_path: str | Path) -> dict:
     prompts: list[str] = []
     edited: list[str] = []
+    read: list[str] = []
     todos: list[str] = []
     with open(transcript_path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
@@ -63,8 +76,9 @@ def extract_session_state(transcript_path: str | Path) -> dict:
             content = (entry.get("message") or {}).get("content")
             if kind == "user":
                 for t in _texts(content):
-                    if _is_human_prompt(t):
-                        prompts.append(t.strip()[:MAX_PROMPT_CHARS])
+                    prompt = _human_prompt(t)
+                    if prompt:
+                        prompts.append(prompt)
                 continue
             for block in content if isinstance(content, list) else []:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
@@ -75,10 +89,17 @@ def extract_session_state(transcript_path: str | Path) -> dict:
                     if path in edited:
                         edited.remove(path)
                     edited.append(path)  # el más reciente al final
+                elif name in READ_TOOLS and args.get("file_path"):
+                    path = args["file_path"]
+                    if path in read:
+                        read.remove(path)
+                    read.append(path)
                 if isinstance(args.get("todos"), list):
                     todos = [t.get("content", "") for t in args["todos"]
                              if isinstance(t, dict) and t.get("status") != "completed" and t.get("content")]
-    return {"prompts": prompts[-MAX_PROMPTS:], "edited": edited[-MAX_FILES:], "todos": todos}
+    read = [p for p in read if p not in edited]  # lo editado ya figura como editado
+    return {"prompts": prompts[-MAX_PROMPTS:], "edited": edited[-MAX_FILES:],
+            "read": read[-MAX_FILES:], "todos": todos}
 
 
 def checkpoint_name(session_id: str) -> str:
@@ -113,8 +134,11 @@ def save_compaction_checkpoint(state: dict, checkpoints_dir: str | Path, session
         "summary": summary,
         "decisions": [],
         "open_items": state["todos"],
-        "files": [{"path": f, "hash": _file_hash(f)} for f in state["edited"]],
-        "anchors": build_anchors([summary, *state["todos"]], state["edited"]),
+        # `files` = editados Y consultados: resume reporta cuáles cambiaron desde entonces
+        "files": [{"path": f, "hash": _file_hash(f)} for f in [*state["edited"], *state.get("read", [])]],
+        "edited": state["edited"],
+        "read": state.get("read", []),
+        "anchors": build_anchors([summary, *state["todos"]], [*state["edited"], *state.get("read", [])]),
     }
     (cps / f"{name}.json").write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
 
@@ -136,8 +160,11 @@ def restore_context(checkpoints_dir: str | Path, session_id: str, cwd: str | Non
     lines = ["[claude-continuity] Contexto restaurado después de compactar — esto se guardó justo antes:"]
     if data.get("summary"):
         lines.append(data["summary"])
-    if data.get("files"):
-        lines.append("Archivos que venías editando: " + ", ".join(f["path"] for f in data["files"]))
+    edited = data.get("edited", [f["path"] for f in data.get("files", [])])
+    if edited:
+        lines.append("Archivos que venías editando: " + ", ".join(edited))
+    if data.get("read"):
+        lines.append("Archivos que consultaste: " + ", ".join(data["read"]))
     if data.get("open_items"):
         lines.append("Tareas abiertas: " + "; ".join(data["open_items"]))
     rules_file = project_rules.find_rules_file(cwd) if cwd else None

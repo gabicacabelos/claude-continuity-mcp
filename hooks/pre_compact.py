@@ -40,7 +40,8 @@ def main() -> None:
     m.record("compaction_shielded", ref=name)
     m.close()
     print(json.dumps({"systemMessage": f"claude-continuity: checkpoint '{name}' guardado antes de compactar "
-                                       f"({len(state['edited'])} archivos, {len(state['todos'])} tareas abiertas)"}))
+                                       f"({len(state['prompts'])} pedidos, {len(state['edited'])} editados, "
+                                       f"{len(state['read'])} consultados, {len(state['todos'])} tareas abiertas)"}))
 
 
 if __name__ == "__main__":

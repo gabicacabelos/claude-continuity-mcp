@@ -2152,6 +2152,28 @@ def test_extract_session_state_is_deterministic_and_filters_noise(tmp_path):
     assert st["prompts"] == ["arreglá el login que falla con tokens vencidos", "y que el refresh use RS256"]
     assert st["edited"] == [str(f)]
     assert st["todos"] == ["agregar test de expiración"], "solo las tareas sin terminar"
+    assert st["read"] == [], "lo leído y después editado cuenta como editado, no se duplica"
+
+
+def test_extract_keeps_pasted_prompts_and_read_only_sessions(tmp_path):
+    """Caso real (03/11): pedidos pegados y una sesión que solo leyó, sin editar nada."""
+    _, f = _auth_proj(tmp_path)
+    t = tmp_path / "s.jsonl"
+    t.write_text("\n".join([
+        _line("user", '\n\n<pasted_content id="e983">\nRevisá esta landing y decime qué corregir\n</pasted_content id="e983">\n'),
+        _line("user", "<system-reminder>ruido</system-reminder>\nmejorá los precios"),
+        _line("user", "<command-name>/compact</command-name>\n<command-args>x</command-args>"),
+        _line("assistant", [{"type": "tool_use", "id": "1", "name": "Read", "input": {"file_path": str(f)}}]),
+    ]), encoding="utf-8")
+    st = C.extract_session_state(t)
+    assert st["prompts"] == ["[pegado] Revisá esta landing y decime qué corregir", "mejorá los precios"]
+    assert st["edited"] == [] and st["read"] == [str(f)]
+
+    cps = tmp_path / "cps"
+    C.save_compaction_checkpoint(st, cps, session_id="ro", trigger="manual")
+    ctx = C.restore_context(cps, session_id="ro", cwd=None)
+    assert "Revisá esta landing" in ctx and f"Archivos que consultaste: {f}" in ctx
+    assert "venías editando" not in ctx
 
 
 def test_compaction_checkpoint_is_resumable_and_pruned(tmp_path, server_module, monkeypatch):
