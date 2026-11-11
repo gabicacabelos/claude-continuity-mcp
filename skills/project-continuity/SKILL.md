@@ -42,7 +42,7 @@ On a project you may have worked on before, before re-exploring files:
    agent: `code`, `desktop`, `cowork`, `design`, `cursor`, `codex`, `gemini`,
    `copilot`…
 
-After a Claude Code compaction, a `[claude-continuity] Contexto restaurado…` block may
+After a Claude Code compaction, a `[claude-continuity] Context restored…` block may
 appear in your context: it's the state saved right before compacting (requests, files,
 open tasks, project rules). Continue from it instead of asking the user to repeat.
 

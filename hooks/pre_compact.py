@@ -39,9 +39,9 @@ def main() -> None:
     m = Metrics(str(data_dir / "cache" / "metrics.db"))
     m.record("compaction_shielded", ref=name)
     m.close()
-    print(json.dumps({"systemMessage": f"claude-continuity: checkpoint '{name}' guardado antes de compactar "
-                                       f"({len(state['prompts'])} pedidos, {len(state['edited'])} editados, "
-                                       f"{len(state['read'])} consultados, {len(state['todos'])} tareas abiertas)"}))
+    print(json.dumps({"systemMessage": f"claude-continuity: checkpoint '{name}' saved before compaction "
+                                       f"({len(state['prompts'])} requests, {len(state['edited'])} edited, "
+                                       f"{len(state['read'])} read, {len(state['todos'])} open tasks)"}))
 
 
 if __name__ == "__main__":

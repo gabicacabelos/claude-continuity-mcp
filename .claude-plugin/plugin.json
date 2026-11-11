@@ -1,6 +1,6 @@
 {
   "name": "project-continuity",
-  "version": "3.8.1",
+  "version": "3.8.2",
   "description": "Persistent, shared project memory for Claude across sessions and clients: diff-only file reads, checkpoints, cross-client task handoff and permanent project rules. 100% local, no API keys.",
   "author": { "name": "Gabriel Cacabelos" },
   "homepage": "https://github.com/gabicacabelos/claude-continuity-mcp",

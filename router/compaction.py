@@ -53,7 +53,7 @@ def _human_prompt(text: str) -> str | None:
     (recordatorios, comandos). Lo que pegó sí cuenta — es su pedido.
     """
     t = _HARNESS_BLOCK.sub("", text)
-    t = _PASTED.sub(lambda m: "[pegado] " + m.group(1).strip(), t).strip()
+    t = _PASTED.sub(lambda m: "[pasted] " + m.group(1).strip(), t).strip()
     if not t or t.startswith("<"):
         return None
     return " ".join(t.split())[:MAX_PROMPT_CHARS]
@@ -123,9 +123,9 @@ def save_compaction_checkpoint(state: dict, checkpoints_dir: str | Path, session
     cps.mkdir(parents=True, exist_ok=True)
     name = checkpoint_name(session_id)
     prompts = [redact_secrets(p)[0] for p in state["prompts"]]
-    summary = (f"Checkpoint automático antes de compactar ({trigger}). Últimos pedidos del usuario: "
+    summary = (f"Automatic checkpoint before compaction ({trigger}). Latest user requests: "
                + " | ".join(prompts) if prompts else
-               f"Checkpoint automático antes de compactar ({trigger}).")
+               f"Automatic checkpoint before compaction ({trigger}).")
     data = {
         "name": name,
         "saved_at": time.strftime("%Y-%m-%d %H:%M"),
@@ -157,21 +157,21 @@ def restore_context(checkpoints_dir: str | Path, session_id: str, cwd: str | Non
     except ValueError:
         return None
 
-    lines = ["[claude-continuity] Contexto restaurado después de compactar — esto se guardó justo antes:"]
+    lines = ["[claude-continuity] Context restored after compaction — saved right before it:"]
     if data.get("summary"):
         lines.append(data["summary"])
     edited = data.get("edited", [f["path"] for f in data.get("files", [])])
     if edited:
-        lines.append("Archivos que venías editando: " + ", ".join(edited))
+        lines.append("Files you were editing: " + ", ".join(edited))
     if data.get("read"):
-        lines.append("Archivos que consultaste: " + ", ".join(data["read"]))
+        lines.append("Files you read: " + ", ".join(data["read"]))
     if data.get("open_items"):
-        lines.append("Tareas abiertas: " + "; ".join(data["open_items"]))
+        lines.append("Open tasks: " + "; ".join(data["open_items"]))
     rules_file = project_rules.find_rules_file(cwd) if cwd else None
     if rules_file:
         texts = project_rules.inject_texts(project_rules.load_rules(rules_file.parent))
         if texts:
-            lines.append("Reglas permanentes del proyecto (seguí respetándolas): " + "; ".join(texts))
-    lines.append(f"Detalle completo: router_checkpoint action=resume name={data['name']}. "
-                 "Para releer esos archivos, router_smart_read devuelve solo lo que cambió.")
+            lines.append("Permanent project rules (keep following them): " + "; ".join(texts))
+    lines.append(f"Full detail: router_checkpoint action=resume name={data['name']}. "
+                 "To re-read those files, router_smart_read returns only what changed.")
     return "\n".join(lines)

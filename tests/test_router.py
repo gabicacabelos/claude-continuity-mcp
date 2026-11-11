@@ -2166,14 +2166,34 @@ def test_extract_keeps_pasted_prompts_and_read_only_sessions(tmp_path):
         _line("assistant", [{"type": "tool_use", "id": "1", "name": "Read", "input": {"file_path": str(f)}}]),
     ]), encoding="utf-8")
     st = C.extract_session_state(t)
-    assert st["prompts"] == ["[pegado] Revisá esta landing y decime qué corregir", "mejorá los precios"]
+    assert st["prompts"] == ["[pasted] Revisá esta landing y decime qué corregir", "mejorá los precios"]
     assert st["edited"] == [] and st["read"] == [str(f)]
 
     cps = tmp_path / "cps"
     C.save_compaction_checkpoint(st, cps, session_id="ro", trigger="manual")
     ctx = C.restore_context(cps, session_id="ro", cwd=None)
-    assert "Revisá esta landing" in ctx and f"Archivos que consultaste: {f}" in ctx
-    assert "venías editando" not in ctx
+    assert "Revisá esta landing" in ctx and f"Files you read: {f}" in ctx
+    assert "Files you were editing" not in ctx
+
+
+def test_shield_texts_are_in_english(tmp_path):
+    """Lo que ven el usuario y el agente sale en inglés (público internacional)."""
+    proj, f = _auth_proj(tmp_path)
+    R.add_rule(proj, "never log tokens", source_client="code")
+    cps = tmp_path / "cps"
+    C.save_compaction_checkpoint(C.extract_session_state(_fake_transcript(tmp_path, f)), cps,
+                                 session_id="en", trigger="auto")
+    ctx = C.restore_context(cps, session_id="en", cwd=str(proj))
+    for expected in ("Context restored after compaction", "Latest user requests:",
+                     "Files you were editing:", "Open tasks:", "Permanent project rules"):
+        assert expected in ctx
+    for spanish in ("Contexto", "Archivos", "Tareas", "Reglas", "pedidos", "compactar"):
+        assert spanish not in ctx
+
+    pre = _run_hook_script("pre_compact.py", {"session_id": "en", "transcript_path": str(_fake_transcript(tmp_path, f)),
+                                              "trigger": "auto"}, tmp_path / "home")
+    msg = json.loads(pre.stdout)["systemMessage"]
+    assert "saved before compaction" in msg and "requests" in msg and "guardado" not in msg
 
 
 def test_compaction_checkpoint_is_resumable_and_pruned(tmp_path, server_module, monkeypatch):
