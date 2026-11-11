@@ -1870,7 +1870,7 @@ def test_checkpoint_resume_reports_stale_memory(server_module, tmp_path, monkeyp
     r = _checkpoint(server_module, action="resume", name="auth")
     kinds = {i["issue"] for i in r["verification"]["issues"]}
     assert {"line_changed", "symbol_missing"} <= kinds
-    assert "verific" in r["memory_warning"]
+    assert r["memory_warning"].startswith("2 references in this checkpoint no longer match the current code")
 
 
 # ─── búsqueda entre proyectos: "¿cómo resolví X en el otro proyecto?" ─────────
@@ -2397,11 +2397,16 @@ def test_checkpoint_why_action_end_to_end(server_module, tmp_path, monkeypatch):
                 summary=f"login en `{f}:3`", decisions=["RS256 por rotación de claves"], files=[str(f)])
     r = _checkpoint(server_module, action="why", ref=f"{f}:3")
     assert r["status"] == "ok" and r["checkpoints"][0]["name"] == "auth-rs256"
+    assert r["checkpoints"][0]["matched"][0] == "anchor at line 3"
     assert "nunca loguear tokens" in r["project_rules"]
 
-    assert _checkpoint(server_module, action="why")["status"] == "error"
+    f.write_text("import os\n\ndef check(t):\n    return True\n", encoding="utf-8")
+    drifted = _checkpoint(server_module, action="why", ref=f"{f}:3")
+    assert drifted["hint"].startswith("Some of these decisions cite code that changed")
+
+    assert "requires `ref`" in _checkpoint(server_module, action="why")["reason"]
     empty = _checkpoint(server_module, action="why", ref="nada_que_ver()")
-    assert empty["checkpoints"] == [] and "archivo:línea" in empty["hint"]
+    assert empty["checkpoints"] == [] and "file:line" in empty["hint"]
     ib.close()
 
 

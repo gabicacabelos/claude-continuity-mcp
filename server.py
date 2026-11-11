@@ -125,7 +125,7 @@ _stats = {
     "diff_reads": 0,
 }
 
-VERSION = "3.8.2"
+VERSION = "3.8.3"
 
 # Umbral: archivos por debajo se devuelven enteros (el overhead de RAG no rinde)
 FULL_RETURN_MAX_TOKENS = 1500
@@ -838,7 +838,7 @@ async def router_checkpoint(params: CheckpointInput) -> str:
 
     if params.action == "why":
         if not params.ref:
-            return _j({"status": "error", "reason": "why requiere `ref` (archivo:línea, archivo o función)"})
+            return _j({"status": "error", "reason": "why requires `ref` (file:line, a file, or a function)"})
         checkpoints = []
         for p in _checkpoints_dir.glob("*.json"):
             try:
@@ -852,10 +852,11 @@ async def router_checkpoint(params: CheckpointInput) -> str:
             if _rules:
                 out["project_rules"] = _rules
         if not found["checkpoints"] and not found["orders"]:
-            out["hint"] = ("sin historia registrada para esa referencia — al guardar checkpoints citá el código "
-                           "como `archivo:línea` o `función()` para que quede trazable")
+            out["hint"] = ("No history recorded for this reference. When saving checkpoints, cite code as "
+                           "`file:line` or `function()` so it stays traceable.")
         elif any(c.get("still_valid") is False for c in found["checkpoints"]):
-            out["hint"] = "hay decisiones cuyo código citado cambió (ver `drift`) — verificá que sigan aplicando"
+            out["hint"] = ("Some of these decisions cite code that changed since (see `drift`). "
+                           "Check they still apply.")
         return _j(out)
 
     # resume
@@ -902,8 +903,8 @@ async def router_checkpoint(params: CheckpointInput) -> str:
             _track("stale_memory", ref=data.get("name"))
             n = len(check["issues"]) + check.get("more_issues", 0)
             out["memory_warning"] = (
-                f"{n} referencia(s) de este checkpoint ya no coinciden con el código actual "
-                "(ver `verification.issues`) — verificalas antes de confiar en el resumen y las decisiones"
+                f"{n} references in this checkpoint no longer match the current code "
+                "(see `verification.issues`). Verify them before trusting the summary and decisions."
             )
     except Exception as e:
         logger.warning(f"verificación de memoria falló: {e}")

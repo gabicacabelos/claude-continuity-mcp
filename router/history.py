@@ -56,10 +56,10 @@ def _match_checkpoint(cp: dict, target: dict) -> tuple[int, list[str], list[dict
         sym = target["symbol"]
         for a in anchors:
             if a.get("symbol") == sym:
-                score, reasons, matched = 3, reasons + [f"ancla del símbolo {sym}"], matched + [a]
+                score, reasons, matched = 3, reasons + [f"anchor on symbol {sym}"], matched + [a]
         if any(_mentions(t, sym) for t in texts):
             score = max(score, 1)
-            reasons.append("mencionado en el texto")
+            reasons.append("mentioned in the text")
         return score, reasons, matched
 
     path, line = target["path"], target["line"]
@@ -68,16 +68,16 @@ def _match_checkpoint(cp: dict, target: dict) -> tuple[int, list[str], list[dict
             matched.append(a)
             if line and a.get("line") and abs(a["line"] - line) <= LINE_WINDOW:
                 score = 3
-                reasons.append(f"ancla en la línea {a['line']}")
+                reasons.append(f"anchor at line {a['line']}")
             else:
                 score = max(score, 2)
-                reasons.append("ancla en el archivo")
+                reasons.append("anchor in the file")
     if any(_same_file(f["path"], path) for f in cp.get("files") or []):
         score = max(score, 2)
-        reasons.append("archivo registrado en el checkpoint")
+        reasons.append("file tracked in the checkpoint")
     if any(_mentions(t, Path(path).name) for t in texts):
         score = max(score, 1)
-        reasons.append("mencionado en el texto")
+        reasons.append("mentioned in the text")
     return score, reasons, matched
 
 

@@ -16,6 +16,15 @@ from xml.sax.saxutils import escape
 REPO_URL = "github.com/gabicacabelos/claude-continuity-mcp"
 FONT = "Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
 
+# Paleta de INDIVIDRA (individratec.com): plana, sin degradés.
+OBSIDIAN = "#0C0E12"
+OBSIDIAN_DEEP = "#070809"
+EMBER = "#FF5520"
+EMBER_LIGHT = "#FFA07A"
+TEXT = "#ECEDEE"
+TEXT_MUTED = "#9A9EA5"
+TEXT_FAINT = "#6B7078"
+
 TEXTS = {
     "en": {
         "period": {"today": "TODAY", "week": "THIS WEEK", "last_session": "LAST SESSION"},
@@ -54,7 +63,7 @@ def human(n: int) -> str:
     return str(max(0, n))
 
 
-def _text(x, y, size, content, fill="#e5e7eb", weight="400", extra="") -> str:
+def _text(x, y, size, content, fill=TEXT, weight="400", extra="") -> str:
     return (f'<text x="{x}" y="{y}" font-family="{FONT}" font-size="{size}" font-weight="{weight}" '
             f'fill="{fill}" {extra}>{escape(content)}</text>')
 
@@ -68,51 +77,48 @@ def build_card_svg(report: dict, period: str = "week", lang: str = "en") -> str:
 
     parts = [
         '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">',
-        '<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">'
-        '<stop offset="0" stop-color="#0b1020"/><stop offset="1" stop-color="#1b1446"/></linearGradient>'
-        '<linearGradient id="acc" x1="0" y1="0" x2="1" y2="0">'
-        '<stop offset="0" stop-color="#8b5cf6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs>',
-        '<rect width="1200" height="630" fill="url(#bg)"/>',
-        _text(72, 92, 22, header, fill="#a5b4fc", weight="600", extra='letter-spacing="3"'),
+        f'<rect width="1200" height="630" fill="{OBSIDIAN}"/>',
+        f'<rect x="0" y="0" width="12" height="630" fill="{EMBER}"/>',
+        _text(72, 92, 22, header, fill=EMBER, weight="600", extra='letter-spacing="3"'),
     ]
 
     if net > 0:
         parts += [
-            _text(66, 250, 150, human(net), fill="url(#acc)", weight="800"),
+            _text(66, 250, 150, human(net), fill=EMBER, weight="800"),
             _text(72, 305, 34, t["subtitle"]),
-            _text(72, 352, 26, t["windows"].format(w=report.get("context_windows_200k", 0)), fill="#94a3b8"),
+            _text(72, 352, 26, t["windows"].format(w=report.get("context_windows_200k", 0)), fill=TEXT_MUTED),
         ]
         y = 400
         for m in report.get("by_mechanism", [])[:3]:
             label = t["mechanisms"].get(m.get("kind"), m.get("how", ""))
             width = max(4, round(4.6 * m["pct"]))
             parts += [
-                _text(72, y + 20, 22, label, fill="#cbd5e1"),
-                f'<rect x="330" y="{y}" width="460" height="26" rx="13" fill="#ffffff" fill-opacity="0.08"/>',
-                f'<rect x="330" y="{y}" width="{width}" height="26" rx="13" fill="url(#acc)"/>',
-                _text(806, y + 20, 22, f"{m['pct']}%", fill="#e5e7eb", weight="600"),
+                _text(72, y + 20, 22, label, fill=TEXT),
+                f'<rect x="330" y="{y}" width="460" height="26" rx="2" fill="#ffffff" fill-opacity="0.08"/>',
+                f'<rect x="330" y="{y}" width="{width}" height="26" rx="2" fill="{EMBER}"/>',
+                _text(806, y + 20, 22, f"{m['pct']}%", fill=TEXT, weight="600"),
             ]
             y += 44
     else:
         parts += [
-            _text(66, 250, 150, "0", fill="url(#acc)", weight="800"),
+            _text(66, 250, 150, "0", fill=EMBER, weight="800"),
             _text(72, 305, 34, t["subtitle"]),
-            _text(72, 360, 26, t["honest"], fill="#fbbf24"),
-            _text(72, 398, 22, t["honest_2"], fill="#94a3b8"),
+            _text(72, 360, 26, t["honest"], fill=EMBER_LIGHT),
+            _text(72, 398, 22, t["honest_2"], fill=TEXT_MUTED),
         ]
 
     y = 170
     for key, label in t["stats"].items():
         value = report.get(key)
         if value:
-            parts += [_text(900, y, 54, str(value), fill="#ffffff", weight="800"),
-                      _text(900, y + 34, 20, label, fill="#94a3b8")]
+            parts += [_text(900, y, 54, str(value), fill=TEXT, weight="800"),
+                      _text(900, y + 34, 20, label, fill=TEXT_MUTED)]
             y += 105
 
     parts += [
-        _text(72, 560, 18, t["net"].format(o=human(report.get("overhead_tokens", 0))), fill="#64748b"),
-        _text(72, 596, 22, REPO_URL, fill="#a5b4fc", weight="600"),
-        _text(1128, 596, 20, t["local"], fill="#64748b", extra='text-anchor="end"'),
+        _text(72, 560, 18, t["net"].format(o=human(report.get("overhead_tokens", 0))), fill=TEXT_FAINT),
+        _text(72, 596, 22, REPO_URL, fill=EMBER, weight="600"),
+        _text(1128, 596, 20, t["local"], fill=TEXT_FAINT, extra='text-anchor="end"'),
         "</svg>",
     ]
     return "\n".join(parts)
@@ -124,10 +130,10 @@ def build_card_html(svg: str) -> str:
 <title>Continuity MCP card</title>
 <style>
   body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; gap: 20px;
-         background: #05070f; font-family: {FONT}; color: #e5e7eb; }}
-  .card svg {{ width: min(1200px, 94vw); height: auto; border-radius: 16px; box-shadow: 0 20px 60px #000a; }}
-  button {{ font: 600 16px {FONT}; padding: 12px 22px; border: 0; border-radius: 999px; cursor: pointer;
-           background: linear-gradient(90deg, #8b5cf6, #22d3ee); color: #05070f; }}
+         background: {OBSIDIAN_DEEP}; font-family: {FONT}; color: {TEXT}; }}
+  .card svg {{ width: min(1200px, 94vw); height: auto; border-radius: 4px; box-shadow: 0 20px 60px #000a; }}
+  button {{ font: 600 16px {FONT}; padding: 12px 22px; border: 0; border-radius: 4px; cursor: pointer;
+           background: {EMBER}; color: #fff; }}
 </style></head>
 <body>
 <div class="card">{svg}</div>
