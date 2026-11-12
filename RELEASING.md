@@ -16,7 +16,9 @@ uv's cache, and works offline after the first run.
    ```
    The `publish` workflow checks that the tag matches `VERSION`, runs the tests, builds the wheel,
    smoke-tests it (no git, no repo) and publishes it to PyPI through Trusted Publishing. No token is stored.
-3. **Confirm the version is live,** then check it from a clean environment:
+3. **Confirm the version is live,** then check it from a clean environment. Right after
+   publishing, the PyPI CDN can answer "no version X.Y.Z" for a minute or two: repeat until the
+   clean install succeeds before switching anything.
    ```bash
    python ~/.claude/skills/launch-premortem/scripts/fresh_env.py --no-git --offline-second-run -- uvx claude-continuity-mcp==X.Y.Z
    ```

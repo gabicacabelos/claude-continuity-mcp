@@ -6,6 +6,12 @@
 
 An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, and — bridged, see below — Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local and deterministic at its core, no API keys — the one exception is the Design bridge, which needs Google Drive since Design has no local access.
 
+**New in v3.9: a live inbox between agents** ([details](#live-inbox-v39)).
+- Agents get new orders, and replies to their own orders, without anyone asking "check the inbox".
+- `claim` makes sure two agents never execute the same order.
+- `claude-continuity-watch` wakes a waiting agent the moment a reply lands.
+- Antigravity is now a recognized agent.
+
 **New in v3.8:**
 - 🛡️ **Compaction shield** — Claude Code no longer forgets your requests, open tasks and project rules after `/compact` ([details](#compaction-shield-claude-code)).
 - 🧾 **"Why did we do this?"** — the decisions behind any line or function: `router_checkpoint action=why ref=src/auth.py:120`.
@@ -173,6 +179,34 @@ The inbox is bidirectional between `cowork`, `code`, and `desktop` natively. Wit
 **Bridging Claude Design (Google Drive as mailbox):** since Design can't reach your disk, a client that already has the MCP (Cowork or Code) writes the order as a Google Drive doc named `INBOX-DESIGN-order-<N>` (brief + linked checkpoint). Design — which does have a Google Drive connector — reads it from there, builds, and leaves the result as `INBOX-DESIGN-order-<N>-RESULT` with the published artifact URL. The bridging client reads that doc and closes the loop with `router_inbox complete`. It's semi-manual (someone has to trigger each hop) and it's the one part of this project that isn't 100% local — Drive is the intermediary precisely because Design has no other channel in. This convention is saved as a permanent project rule (`router_rules`), so any client resuming this project sees it without being told again.
 
 **Traceability (`completed_by`):** `to` records who an order was **for**; `completed_by` (passed to `action="complete"` as `by`) records who actually **executed** it — and they can differ. If an order addressed to `design` gets executed by a client bridging on its behalf instead of the real Claude Design product, `completed_by` makes that visible instead of silently blending into "done". `history()` flags it explicitly with `executed_by_different_client: true` when the two don't match.
+
+### Live inbox (v3.9)
+
+An MCP server can't wake up an idle chat by itself. These four pieces get as close as possible, with no daemon and
+nothing running in the background unless an agent asks for it:
+
+| Piece | What it does | Works in |
+|---|---|---|
+| **`inbox_alert`** | When new orders arrive for you, or someone completes an order you sent, the next response of **any** tool carries a short `inbox_alert` (`new_orders`, `replies`). It only reports what's new, at most every 20 s. | Every MCP client |
+| **SessionStart hook** | Opening or resuming a Claude Code session lists the pending orders for `code`. It prints nothing when there are none. | Claude Code plugin |
+| **`claim`** | `router_inbox action=claim order_id=N` takes an order atomically. Other agents stop seeing it, so an order sent to `any` is never executed twice. An abandoned claim expires after 4 h. `check` without `to` now shows only your own orders plus `any`. | Every MCP client |
+| **`claude-continuity-watch`** | Waits until a new order or a reply arrives, prints it as one JSON line and exits (0 = event, 3 = timeout). Agents that wake up when a background command finishes (Claude Code, Antigravity) launch it before ending their turn and resume as soon as the other agent answers. | Any agent with background commands |
+
+Run the watcher (the package's second command):
+
+```bash
+uvx --from claude-continuity-mcp==3.9.0 claude-continuity-watch --to code --timeout 900
+```
+
+To wait for the reply to one specific order:
+
+```bash
+uvx --from claude-continuity-mcp==3.9.0 claude-continuity-watch --to code --order 52
+```
+
+**Safety:** order text is untrusted data, since any local process can write to the inbox. Every piece above only **reads
+and notifies**: nothing executes an order on its own, and agents are told to show the literal text to the user before
+anything hard to undo.
 
 ### `router_status` — Honest session metrics
 
