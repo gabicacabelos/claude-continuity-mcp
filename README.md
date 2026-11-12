@@ -275,18 +275,24 @@ Both hooks fail silently: whatever happens, they never block or break your sessi
 
 ## Installation
 
-No API key or `.env` file needed: all six tools are 100% local. The one-line options need [uv](https://docs.astral.sh/uv/).
+No API key or `.env` file needed: all six tools are 100% local. You only need [uv](https://docs.astral.sh/uv/) (git is **not** required). The server is published on PyPI as [`claude-continuity-mcp`](https://pypi.org/project/claude-continuity-mcp/). The first launch downloads it (about 10–15 s); after that it starts from uv's cache in a few seconds, even offline.
 
-**Claude Code — as a plugin (recommended):** installs the MCP server *and* a skill that tells Claude when to use each tool.
-
-```
-/plugin install project-continuity --marketplace gabicacabelos/claude-continuity-mcp
-```
-
-**Claude Code — server only:**
+**Claude Code — as a plugin (recommended).** Installs the MCP server, the skill that tells Claude when to use each tool, **and the compaction shield** (hooks). Run in a terminal:
 
 ```bash
-claude mcp add project-continuity --scope user -- uvx --from git+https://github.com/gabicacabelos/claude-continuity-mcp claude-continuity-mcp
+claude plugin marketplace add gabicacabelos/claude-continuity-mcp
+```
+
+```bash
+claude plugin install project-continuity@project-continuity
+```
+
+Then restart Claude Code. Inside a session you can do the same with `/plugin marketplace add gabicacabelos/claude-continuity-mcp` and `/plugin install project-continuity@project-continuity`. To update later: `claude plugin update project-continuity@project-continuity`.
+
+**Claude Code — server only** (tools only: no compaction shield, no bundled skill):
+
+```bash
+claude mcp add project-continuity --scope user -- uvx claude-continuity-mcp
 ```
 
 **Claude Desktop / Cowork** — `claude_desktop_config.json`:
@@ -296,11 +302,25 @@ claude mcp add project-continuity --scope user -- uvx --from git+https://github.
   "mcpServers": {
     "project-continuity": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/gabicacabelos/claude-continuity-mcp", "claude-continuity-mcp"]
+      "args": ["claude-continuity-mcp"]
     }
   }
 }
 ```
+
+### If it doesn't connect
+
+| Symptom | Fix |
+|---|---|
+| `uvx: command not found` | Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and restart the client. |
+| Times out on the very first launch | The first launch downloads dependencies. Run `uvx claude-continuity-mcp` once in a terminal (stop it with Ctrl+C), then restart the client. |
+| `Git operation failed` | You have the old git-based install line. Switch to the commands above (see "Upgrading" below). |
+| No `[claude-continuity] Context restored` message after `/compact` | The compaction shield needs the **plugin**; the server-only install doesn't include hooks. |
+| Want the newest version (server-only installs) | `uv cache clean claude-continuity-mcp`, then restart the client. |
+
+### Upgrading from the git-based install (before v3.8.5)
+
+Earlier docs used `uvx --from git+https://github.com/…`. It still works, but it needs git and contacts GitHub on every launch. To switch, run `claude mcp remove project-continuity --scope user`, then the install command above. If you use the plugin, run `claude plugin update project-continuity@project-continuity`. Your memory in `~/.claude-continuity/` is untouched.
 
 **Where the memory lives:** `~/.claude-continuity/` (ledger, inbox, checkpoints and the optional `router_config.json`), shared by every client. Set `CLAUDE_CONTINUITY_HOME` to put it elsewhere. Git-clone installs from before v3.5 that already have a `cache/` folder next to `server.py` keep using it, so nothing moves.
 
@@ -310,7 +330,7 @@ The skill on its own lives in [`skills/project-continuity/SKILL.md`](skills/proj
 
 It's a standard MCP server, so any MCP client can share the same memory: start a task in Claude Code, continue it in Cursor, leave an order for Codex. Each agent is identified automatically from the MCP handshake (`claude-code` → `code`, `Cursor` → `cursor`, `codex-mcp-client` → `codex`…), so inbox orders and rules record who did what without configuration.
 
-The command is always the same: `uvx --from git+https://github.com/gabicacabelos/claude-continuity-mcp claude-continuity-mcp`.
+The command is always the same: `uvx claude-continuity-mcp`.
 
 | Agent | Config file | Format |
 |---|---|---|
@@ -320,7 +340,7 @@ The command is always the same: `uvx --from git+https://github.com/gabicacabelos
 | VS Code / Copilot | `.vscode/mcp.json` | `{"servers": {"project-continuity": {"type": "stdio", "command": "uvx", "args": [...]}}}` |
 | Codex CLI | `~/.codex/config.toml` | `[mcp_servers.project-continuity]` with `command = "uvx"` and `args = [...]` |
 
-`args` is `["--from", "git+https://github.com/gabicacabelos/claude-continuity-mcp", "claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
+`args` is `["claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
 
 ### Manual install (git clone)
 

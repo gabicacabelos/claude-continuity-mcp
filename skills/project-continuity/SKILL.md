@@ -13,17 +13,33 @@ machine: no API keys, no network calls.
 ## Requirement
 
 The tools below come from the free, open-source MCP server
-<https://github.com/gabicacabelos/claude-continuity-mcp>. If none of the `router_*`
-tools are available, tell the user it isn't installed and show the one-line setup:
+<https://github.com/gabicacabelos/claude-continuity-mcp>, published on PyPI as
+`claude-continuity-mcp`. If none of the `router_*` tools are available, tell the user it
+isn't installed and show the setup for their agent. It only needs
+[uv](https://docs.astral.sh/uv/); git is not required.
 
-```bash
-claude mcp add project-continuity --scope user -- uvx --from git+https://github.com/gabicacabelos/claude-continuity-mcp claude-continuity-mcp
-```
+- **Claude Code (recommended: the plugin).** It adds the server, this skill and the compaction
+  shield. Run these two commands in a terminal, then restart Claude Code:
+  ```bash
+  claude plugin marketplace add gabicacabelos/claude-continuity-mcp
+  ```
+  ```bash
+  claude plugin install project-continuity@project-continuity
+  ```
+- **Claude Code, server only** (no compaction shield):
+  `claude mcp add project-continuity --scope user -- uvx claude-continuity-mcp`
+- **Claude Desktop, Cowork, Cursor, Codex, Gemini CLI and other MCP clients:** register
+  `"command": "uvx"` with `"args": ["claude-continuity-mcp"]` in the client's MCP config.
+  The README lists the file for each.
 
-(Requires [uv](https://docs.astral.sh/uv/). Other agents, such as Claude Desktop,
-Cursor, Codex or Gemini CLI, register the same `uvx` command in their MCP config; the
-README has the exact file for each.) Do not try to emulate the tools without the
-server.
+**If it doesn't connect:**
+- `uvx` not found: install uv.
+- The first launch timed out: it downloads dependencies once, so run `uvx claude-continuity-mcp`
+  in a terminal, stop it, and restart the client.
+- `Git operation failed`: the user has the old git-based install line. Replace it with the
+  commands above.
+
+Do not try to emulate the tools without the server.
 
 Every tool takes a single `params` object.
 
@@ -42,7 +58,7 @@ On a project you may have worked on before, before re-exploring files:
    agent: `code`, `desktop`, `cowork`, `design`, `cursor`, `codex`, `gemini`,
    `copilot`…
 
-After a Claude Code compaction, a `[claude-continuity] Context restored…` block may
+With the Claude Code plugin, after a compaction a `[claude-continuity] Context restored…` block may
 appear in your context: it's the state saved right before compacting (requests, files,
 open tasks, project rules). Continue from it instead of asking the user to repeat.
 

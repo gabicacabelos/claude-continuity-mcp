@@ -3,9 +3,7 @@
     "project-continuity": {
       "command": "uvx",
       "args": [
-        "--from",
-        "git+https://github.com/gabicacabelos/claude-continuity-mcp@3343fed8d96c5bc5326b1f05443bb37f1038d0a4",
-        "claude-continuity-mcp"
+        "claude-continuity-mcp==3.8.5"
       ]
     }
   }
