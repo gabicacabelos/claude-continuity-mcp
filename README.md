@@ -12,6 +12,8 @@ An MCP server that gives Claude something it doesn't have today: **memory that p
 - 📊 **Shareable savings card** — a 1200×630 image of what the MCP saved you this week, with no file or project names in it.
 - 🔀 **Any MCP agent** — the same memory for Cursor, Codex, Gemini CLI, VS Code / Copilot, Windsurf… ([setup](#other-agents-cursor-codex-gemini-cli-vs-code--copilot-windsurf)).
 
+**Also on Agensi:** the companion skill is free on the [Agensi marketplace](https://www.agensi.io/skills/project-continuity-persistent-memory-for-coding-agents) ([more from the author](#more-from-the-author)).
+
 ## What this actually does (in plain English)
 
 Claude forgets everything the moment a conversation ends, and it can't share anything between its different apps — what you told Claude Code doesn't exist for Claude Desktop. This project fixes that by keeping a small memory file on your own computer, shared by every Claude app you use.
@@ -463,6 +465,13 @@ This server reads files from your disk and persists what it reads. Worth knowing
 - BM25 is lexical: a query with no words in common with the text degrades to the first chunks of the file. Installing `fastembed` improves semantic queries (requires onnxruntime compatible with your Python version).
 - BM25 is lexical, project-wide too: `router_project_search` ranks by shared vocabulary, so a query with no words in common with the code degrades. It complements Grep and semantic search, it doesn't replace them.
 - `code_staleness` detects that the code changed — it doesn't restart itself. Auto-restart isn't safe here: multiple clients may share the same process, and killing it mid-inbox-order would cut the tool out from under another session with no guarantee it comes back on its own.
+
+## More from the author
+
+Agent skills on [Agensi](https://www.agensi.io/creators/gabriel-cacabelos):
+
+- **[Project Continuity](https://www.agensi.io/skills/project-continuity-persistent-memory-for-coding-agents)** (free): this MCP's companion skill.
+- **[Supabase RLS Audit + Cross-Tenant Leak Test](https://www.agensi.io/creators/gabriel-cacabelos)** (paid): audits your Supabase RLS, then proves one tenant can't read or write another's data by trying it in every table. It gives exact fix SQL and a CI guard that blocks pull requests that reopen a leak.
 
 ## License
 
