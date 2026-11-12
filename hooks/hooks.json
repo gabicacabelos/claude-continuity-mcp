@@ -1,5 +1,5 @@
 {
-  "description": "Escudo de compactación: checkpoint automático antes de /compact y contexto restaurado después.",
+  "description": "Escudo de compactación (checkpoint antes de /compact y contexto restaurado después) y aviso de órdenes pendientes del buzón al abrir o retomar sesión.",
   "hooks": {
     "PreCompact": [
       {
@@ -19,6 +19,16 @@
           {
             "type": "command",
             "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox_peek.py\"",
             "timeout": 30
           }
         ]

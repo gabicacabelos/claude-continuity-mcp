@@ -15,6 +15,9 @@ _KNOWN = [
     ("cowork", "cowork", "Claude Cowork"),
     ("cursor", "cursor", "Cursor"),
     ("codex", "codex", "Codex"),
+    # Antigravity se presenta como "antigravity-client": sin esto su id quedaba
+    # "antigravity-client" y no veía las órdenes dirigidas a "antigravity".
+    ("antigravity", "antigravity", "Antigravity"),
     ("gemini", "gemini", "Gemini CLI"),
     ("visual studio code", "copilot", "VS Code / Copilot"),
     ("vscode", "copilot", "VS Code / Copilot"),
