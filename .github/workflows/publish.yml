@@ -1,0 +1,45 @@
+name: publish
+
+# Publishes to PyPI when a version tag (v3.8.5, v3.9.0…) is pushed.
+# Uses PyPI Trusted Publishing: no token is stored anywhere. PyPI trusts this
+# exact repo + workflow + environment (configured once on pypi.org).
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Tag must match the version in server.py
+        run: |
+          v=$(python -c "import re;print(re.search(r'^VERSION = \"(.+)\"', open('server.py', encoding='utf-8').read(), re.M).group(1))")
+          test "v$v" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != server.py VERSION $v"; exit 1; }
+      - name: Tests
+        run: uv run --with pytest python -m pytest -q
+      - name: Build
+        run: uv build
+      - name: Smoke test the built wheel (no git, no repo)
+        run: |
+          cd "$RUNNER_TEMP"
+          timeout 60 uvx --from "$GITHUB_WORKSPACE"/dist/*.whl claude-continuity-mcp < /dev/null 2>&1 | tee out.txt
+          grep -q "memoria y continuidad" out.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
