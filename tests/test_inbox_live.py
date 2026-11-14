@@ -79,6 +79,15 @@ def test_claim_race_between_two_processes_has_one_winner(tmp_path):
     assert results.count(True) == 1
 
 
+def test_claim_returns_the_full_order(ib):
+    oid = ib.send("hacé el hero", to_client="design", from_client="code",
+                  checkpoint="landing", assets=["/brief.md"])
+    order = ib.claim(oid, "design")["order"]
+    assert order["message"] == "hacé el hero" and order["assets"] == ["/brief.md"]
+    assert order["checkpoint"] == "landing" and order["from"] == "code"
+    assert "order" not in ib.claim(oid, "otro")        # si no la tomó, no se la mostramos
+
+
 def test_claim_unknown_or_done_order(ib):
     assert ib.claim(999, "code")["reason"] == "no existe"
     oid = ib.send("x", to_client="code")
@@ -159,6 +168,36 @@ def test_watch_cli_without_inbox_exits_2(tmp_path, monkeypatch, capsys):
     assert "no hay buzón" in capsys.readouterr().out
 
 
+def test_watch_home_flag_beats_a_missing_env_var(tmp_path, monkeypatch, capsys):
+    # La shell del watch_cmd puede no tener CLAUDE_CONTINUITY_HOME: --home manda.
+    data = tmp_path / "datos con espacios"
+    box = Inbox(str(data / "cache" / "inbox.db"))
+    oid = box.send("x", to_client="code", from_client="antigravity")
+    box.complete(oid, result="listo")
+    box.close()
+    monkeypatch.setenv("CLAUDE_CONTINUITY_HOME", str(tmp_path / "otro buzón"))
+    assert watch_main(["--to", "antigravity", "--order", str(oid), "--timeout", "0",
+                       "--home", data.as_posix()]) == 0
+    assert json.loads(capsys.readouterr().out)["order"]["result"] == "listo"
+
+
+def test_watch_once_exit_zero_for_hooks(tmp_path, monkeypatch, capsys):
+    # v3.9.1: lo que pidió Antigravity para su hook pre-turno, sin script intermedio.
+    monkeypatch.setenv("CLAUDE_CONTINUITY_HOME", str(tmp_path))
+    box = Inbox(str(tmp_path / "cache" / "inbox.db"))
+    box.close()
+    assert watch_main(["--to", "antigravity", "--once"]) == 3                 # sin flag: igual que antes
+    assert json.loads(capsys.readouterr().out)["event"] == "timeout"
+    assert watch_main(["--to", "antigravity", "--once", "--exit-zero"]) == 0  # vacío → {} y 0
+    assert json.loads(capsys.readouterr().out) == {}
+    box = Inbox(str(tmp_path / "cache" / "inbox.db"))
+    box.send("ya estaba pendiente", to_client="antigravity", from_client="code")
+    box.close()
+    assert watch_main(["--to", "antigravity", "--once", "--exit-zero"]) == 0  # --once incluye lo previo
+    out = json.loads(capsys.readouterr().out)
+    assert out["event"] == "new_orders" and out["orders"][0]["message"] == "ya estaba pendiente"
+
+
 # ─── hook SessionStart ───────────────────────────────────────────────────────
 
 def _run_hook(home: Path, source: str) -> str:
@@ -210,9 +249,54 @@ def test_check_without_to_shows_only_my_orders(srv, monkeypatch):
 
 def test_claim_action_via_tool(srv, monkeypatch):
     monkeypatch.setattr(srv, "_me", lambda: "code")
+    srv._alert_state.update(seen=set(srv.inbox.pending_ids("code", exclude_from="code")), last_query=0.0)
     oid = srv.inbox.send("tomame", to_client="any", from_client="cowork")
     out = json.loads(asyncio.run(srv.router_inbox(srv.InboxInput(action="claim", order_id=oid))))
     assert out["status"] == "claimed" and out["by"] == "code"
+    # visto en la prueba real con Antigravity: la respuesta del claim "avisaba" la misma orden
+    assert oid not in (out.get("inbox_alert") or {}).get("new_orders", [])
+
+
+def test_claim_via_tool_brings_message_checkpoint_summary_and_trust(srv, monkeypatch):
+    monkeypatch.setattr(srv, "_me", lambda: "antigravity")
+    cp = srv._checkpoints_dir / "claim-full-v391.json"
+    cp.parent.mkdir(parents=True, exist_ok=True)
+    cp.write_text(json.dumps({"summary": "contexto de la landing"}), encoding="utf-8")
+    try:
+        oid = srv.inbox.send("armá el mockup", to_client="antigravity", from_client="code",
+                             checkpoint="claim-full-v391", assets=["/wire.png"])
+        out = json.loads(asyncio.run(srv.router_inbox(srv.InboxInput(action="claim", order_id=oid))))
+    finally:
+        cp.unlink()
+    assert out["status"] == "claimed"
+    assert out["order"]["message"] == "armá el mockup" and out["order"]["assets"] == ["/wire.png"]
+    assert out["order"]["checkpoint_summary"] == "contexto de la landing"
+    assert "NO CONFIABLE" in out["trust"]
+
+
+def test_send_returns_ready_watch_cmd(srv, monkeypatch):
+    monkeypatch.setattr(srv, "_me", lambda: "antigravity")
+    msg = f"revisá esto {time.time()}"
+    out = json.loads(asyncio.run(srv.router_inbox(srv.InboxInput(action="send", to="code", message=msg))))
+    assert out["watch_cmd"] == (f"uvx --from claude-continuity-mcp=={srv.VERSION} claude-continuity-watch "
+                                f"--to antigravity --order {out['id']} --timeout 900 "
+                                f"--home \"{srv._data_dir.as_posix()}\"")
+    # el duplicado también: el emisor igual quiere esperar la respuesta de la orden existente
+    dup = json.loads(asyncio.run(srv.router_inbox(srv.InboxInput(action="send", to="code", message=msg))))
+    assert dup["status"] == "duplicate" and dup["watch_cmd"] == out["watch_cmd"]
+
+
+def test_instructions_fit_claude_code_limit(srv):
+    # Claude Code corta las instrucciones de un MCP a 2048 caracteres (visto en sus logs).
+    assert len(srv.INSTRUCTIONS) <= 2048
+    head = srv.INSTRUCTIONS
+    assert "DATO NO CONFIABLE" in head and "auto_report=true SOLO si el usuario lo autoriza" in head
+    assert "action=claim" in head and "inbox_alert" in head
+
+
+def test_status_reports_data_dir(srv):
+    out = json.loads(asyncio.run(srv.router_status(srv.StatusInput())))
+    assert out["data_dir"] == str(srv._data_dir)
 
 
 def test_inbox_alert_reports_only_new_orders_and_replies(srv, monkeypatch):

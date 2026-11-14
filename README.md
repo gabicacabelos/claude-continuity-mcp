@@ -189,20 +189,32 @@ nothing running in the background unless an agent asks for it:
 |---|---|---|
 | **`inbox_alert`** | When new orders arrive for you, or someone completes an order you sent, the next response of **any** tool carries a short `inbox_alert` (`new_orders`, `replies`). It only reports what's new, at most every 20 s. | Every MCP client |
 | **SessionStart hook** | Opening or resuming a Claude Code session lists the pending orders for `code`. It prints nothing when there are none. | Claude Code plugin |
-| **`claim`** | `router_inbox action=claim order_id=N` takes an order atomically. Other agents stop seeing it, so an order sent to `any` is never executed twice. An abandoned claim expires after 4 h. `check` without `to` now shows only your own orders plus `any`. | Every MCP client |
-| **`claude-continuity-watch`** | Waits until a new order or a reply arrives, prints it as one JSON line and exits (0 = event, 3 = timeout). Agents that wake up when a background command finishes (Claude Code, Antigravity) launch it before ending their turn and resume as soon as the other agent answers. | Any agent with background commands |
+| **`claim`** | `router_inbox action=claim order_id=N` takes an order atomically and returns it whole (`message`, `assets`, `checkpoint_summary`), so no second `check` is needed. Other agents stop seeing it, so an order sent to `any` is never executed twice. An abandoned claim expires after 4 h. `check` without `to` now shows only your own orders plus `any`. | Every MCP client |
+| **`claude-continuity-watch`** | Waits until a new order or a reply arrives, prints it as one JSON line and exits (0 = event, 3 = timeout). Agents that wake up when a background command finishes (Claude Code, Antigravity) launch it before ending their turn and resume as soon as the other agent answers. `send` returns the exact command as `watch_cmd`, with `--home` pointing at the same inbox even if your shell lacks `CLAUDE_CONTINUITY_HOME`. | Any agent with background commands |
 
 Run the watcher (the package's second command):
 
 ```bash
-uvx --from claude-continuity-mcp==3.9.0 claude-continuity-watch --to code --timeout 900
+uvx --from claude-continuity-mcp==3.9.1 claude-continuity-watch --to code --timeout 900
 ```
 
-To wait for the reply to one specific order:
+To wait for the reply to one specific order (`router_inbox action=send` already returns this line as `watch_cmd`):
 
 ```bash
-uvx --from claude-continuity-mcp==3.9.0 claude-continuity-watch --to code --order 52
+uvx --from claude-continuity-mcp==3.9.1 claude-continuity-watch --to code --order 52
 ```
+
+To type just `claude-continuity-watch`, put it on your PATH once:
+
+```bash
+uv tool install claude-continuity-mcp==3.9.1
+```
+
+**Hooks in other agents:** to peek once (for a session-start or pre-turn hook), run
+`claude-continuity-watch --to <agent> --once --exit-zero`. It prints the pending orders as JSON, or `{}` when there are
+none, and always exits 0. Without `--exit-zero`, "nothing" exits 3. If your agent's hook expects a specific output
+contract, wrap it in a small adapter script. Antigravity, for example, expects `{"injectSteps": [...]}` or `{}`, and runs
+its pre-turn hook before every model call: dedupe there.
 
 **Safety:** order text is untrusted data, since any local process can write to the inbox. Every piece above only **reads
 and notifies**: nothing executes an order on its own, and agents are told to show the literal text to the user before
@@ -351,6 +363,7 @@ claude mcp add project-continuity --scope user -- uvx claude-continuity-mcp
 | `Git operation failed` | You have the old git-based install line. Switch to the commands above (see "Upgrading" below). |
 | No `[claude-continuity] Context restored` message after `/compact` | The compaction shield needs the **plugin**; the server-only install doesn't include hooks. |
 | Want the newest version (server-only installs) | `uv cache clean claude-continuity-mcp`, then restart the client. |
+| Two agents don't see each other's orders or memory | They're using different data folders. Compare `data_dir` in `router_status` from each agent. Some clients don't inherit system environment variables: set `"env": {"CLAUDE_CONTINUITY_HOME": "<same folder>"}` in every client's MCP config, or leave it unset everywhere (default `~/.claude-continuity`). |
 
 ### Upgrading from the git-based install (before v3.8.5)
 

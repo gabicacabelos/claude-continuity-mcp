@@ -203,7 +203,9 @@ class Inbox:
         )
         self._db.commit()
         if cur.rowcount:
-            return {"claimed": True, "id": order_id, "by": by}
+            # La orden completa en la misma respuesta: quien la toma no necesita otro `check`.
+            r = self._db.execute(f"SELECT {_COLS} FROM inbox WHERE id=?", (order_id,)).fetchone()
+            return {"claimed": True, "id": order_id, "by": by, "order": self._row(r)}
         row = self._db.execute("SELECT status, claimed_by FROM inbox WHERE id=?", (order_id,)).fetchone()
         if not row:
             return {"claimed": False, "id": order_id, "reason": "no existe"}
