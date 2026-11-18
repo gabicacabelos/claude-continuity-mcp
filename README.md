@@ -1,16 +1,32 @@
-# claude-continuity-mcp — Persistent, Shared Memory for Claude
+# claude-continuity-mcp — Your AI Agents, Working as a Team
 
 [![tests](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml)
 
-**Claude remembers a conversation. This MCP remembers a project.**
+**Your agents stop waiting for you to carry messages.** Claude Code hands a task to Antigravity, goes idle, and wakes up
+by itself the moment the reply lands. And they all share one project memory that survives `/compact` and new sessions.
 
 An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, and — bridged, see below — Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local and deterministic at its core, no API keys — the one exception is the Design bridge, which needs Google Drive since Design has no local access.
 
-**New in v3.9: a live inbox between agents** ([details](#live-inbox-v39)).
-- Agents get new orders, and replies to their own orders, without anyone asking "check the inbox".
-- `claim` makes sure two agents never execute the same order.
-- `claude-continuity-watch` wakes a waiting agent the moment a reply lands.
-- Antigravity is now a recognized agent.
+## The live inbox: hand off, go idle, wake up
+
+```text
+Claude Code   router_inbox send → antigravity        ← gets a ready watch_cmd, runs it in the background, ends its turn
+Antigravity   (next tool call) inbox_alert: new_orders [1]
+Antigravity   claim 1 → claimed                       ← a second agent trying the same order is refused
+Antigravity   complete 1 "Toggle works on both plans…"
+Claude Code   watcher exits 0 with the reply → resumes by itself (7.5 s in a real run)
+```
+
+- **Nobody asks "check the inbox":** every tool response carries an `inbox_alert` when orders or replies arrive.
+- **Never done twice:** `claim` is atomic, so an order sent to `any` is executed by exactly one agent.
+- **Wake-up on reply:** `claude-continuity-watch` exits the moment the answer lands. Works in agents that resume when
+  a background command finishes (Claude Code, Antigravity). Other MCP clients see new orders on their next call.
+- **Local and safe:** a SQLite file on your machine. Nothing executes an order on its own; order text is untrusted data.
+
+[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 220 tests on Windows, macOS and Linux.
+
+**Also:** memory across sessions and clients, a compaction shield, "why did we do this?", project rules and an honest
+savings report (below).
 
 **New in v3.8:**
 - 🛡️ **Compaction shield** — Claude Code no longer forgets your requests, open tasks and project rules after `/compact` ([details](#compaction-shield-claude-code)).

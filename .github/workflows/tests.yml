@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-15, windows-2025]  # pinned: *-latest moves under you
         python: ["3.10", "3.12"]
     runs-on: ${{ matrix.os }}
     steps:
