@@ -12,7 +12,8 @@ nunca ejecuta ni completa órdenes.
   claude-continuity-watch --to code --timeout 600 --interval 2
   claude-continuity-watch --to antigravity --once --exit-zero   # mirada única para un hook
 
-Salida: una línea JSON. Códigos: 0 = hubo evento · 3 = se cumplió el timeout sin eventos · 2 = error.
+Salida: una línea JSON. Códigos: 0 = hubo evento · 3 = se cumplió el timeout sin eventos · 2 = error (p. ej. --order de una orden que no existe).
+Sin buzón todavía (el MCP nunca corrió) cuenta como buzón vacío.
 Con --exit-zero, "sin eventos" imprime {} y sale con 0 (lo que esperan muchos hooks).
 """
 import argparse

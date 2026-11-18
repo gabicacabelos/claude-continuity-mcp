@@ -195,24 +195,24 @@ nothing running in the background unless an agent asks for it:
 Run the watcher (the package's second command):
 
 ```bash
-uvx --from claude-continuity-mcp==3.9.1 claude-continuity-watch --to code --timeout 900
+uvx --from claude-continuity-mcp==3.9.2 claude-continuity-watch --to code --timeout 900
 ```
 
 To wait for the reply to one specific order (`router_inbox action=send` already returns this line as `watch_cmd`):
 
 ```bash
-uvx --from claude-continuity-mcp==3.9.1 claude-continuity-watch --to code --order 52
+uvx --from claude-continuity-mcp==3.9.2 claude-continuity-watch --to code --order 52
 ```
 
 To type just `claude-continuity-watch`, put it on your PATH once:
 
 ```bash
-uv tool install claude-continuity-mcp==3.9.1
+uv tool install claude-continuity-mcp==3.9.2
 ```
 
 **Hooks in other agents:** to peek once (for a session-start or pre-turn hook), run
 `claude-continuity-watch --to <agent> --once --exit-zero`. It prints the pending orders as JSON, or `{}` when there are
-none, and always exits 0. Without `--exit-zero`, "nothing" exits 3. If your agent's hook expects a specific output
+none, and always exits 0, also on a machine where the MCP has never run yet. Without `--exit-zero`, "nothing" exits 3. If your agent's hook expects a specific output
 contract, wrap it in a small adapter script. Antigravity, for example, expects `{"injectSteps": [...]}` or `{}`, and runs
 its pre-turn hook before every model call: dedupe there.
 

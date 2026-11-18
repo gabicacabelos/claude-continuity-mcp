@@ -3,7 +3,7 @@
     "project-continuity": {
       "command": "uvx",
       "args": [
-        "claude-continuity-mcp==3.9.1"
+        "claude-continuity-mcp==3.9.2"
       ]
     }
   }
