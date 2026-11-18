@@ -162,10 +162,44 @@ def test_watch_reply_in_same_clock_tick_is_not_lost(ib, monkeypatch):
     assert code == 0 and payload["event"] == "reply" and payload["orders"][0]["id"] == oid
 
 
-def test_watch_cli_without_inbox_exits_2(tmp_path, monkeypatch, capsys):
+def test_watch_cli_without_inbox_is_an_empty_inbox(tmp_path, monkeypatch, capsys):
+    # v3.9.2: en una PC donde el MCP nunca corrió no hay inbox.db. Para un hook eso es
+    # "nada pendiente", no un error (antes salía con 2 en el primer arranque del comprador).
     monkeypatch.setenv("CLAUDE_CONTINUITY_HOME", str(tmp_path / "nada"))
-    assert watch_main(["--to", "code", "--timeout", "0"]) == 2
+    assert watch_main(["--to", "code", "--once", "--exit-zero"]) == 0
+    assert json.loads(capsys.readouterr().out) == {}
+    assert watch_main(["--to", "code", "--timeout", "0"]) == 3
+    assert json.loads(capsys.readouterr().out)["event"] == "timeout"
+    assert watch_main(["--to", "code", "--order", "7", "--timeout", "0"]) == 2  # esa orden no puede existir
     assert "no hay buzón" in capsys.readouterr().out
+    assert not (tmp_path / "nada").exists()  # el watcher solo lee: no crea el buzón
+
+
+def test_watch_waits_for_an_inbox_created_later(tmp_path, monkeypatch, capsys):
+    # El agente lanza el watch antes de que el MCP arranque por primera vez.
+    monkeypatch.setenv("CLAUDE_CONTINUITY_HOME", str(tmp_path))
+
+    def first_server_run():
+        time.sleep(0.6)
+        box = Inbox(str(tmp_path / "cache" / "inbox.db"))
+        box.send("primera orden", to_client="code", from_client="antigravity")
+        box.close()
+
+    threading.Thread(target=first_server_run).start()
+    assert watch_main(["--to", "code", "--timeout", "10", "--interval", "0.2"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["event"] == "new_orders" and out["orders"][0]["message"] == "primera orden"
+
+
+def test_watch_home_survives_literal_quotes(tmp_path, monkeypatch, capsys):
+    # cmd.exe y otras capas de comillas pueden entregar --home con las comillas incluidas.
+    box = Inbox(str(tmp_path / "con espacio" / "cache" / "inbox.db"))
+    oid = box.send("x", to_client="code", from_client="antigravity")
+    box.complete(oid, result="listo")
+    box.close()
+    quoted = '"' + (tmp_path / "con espacio").as_posix() + '"'
+    assert watch_main(["--to", "antigravity", "--order", str(oid), "--timeout", "0", "--home", quoted]) == 0
+    assert json.loads(capsys.readouterr().out)["order"]["result"] == "listo"
 
 
 def test_watch_home_flag_beats_a_missing_env_var(tmp_path, monkeypatch, capsys):
