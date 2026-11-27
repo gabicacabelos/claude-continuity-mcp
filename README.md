@@ -23,7 +23,7 @@ Claude Code   watcher exits 0 with the reply → resumes by itself (7.5 s in a r
   a background command finishes (Claude Code, Antigravity). Other MCP clients see new orders on their next call.
 - **Local and safe:** a SQLite file on your machine. Nothing executes an order on its own; order text is untrusted data.
 
-[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 390 tests on Windows, macOS and Linux.
+[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 412 tests on Windows, macOS and Linux.
 
 **Also:** memory across sessions and clients, a compaction shield, "why did we do this?", project rules and an honest
 savings report (below).
@@ -352,7 +352,7 @@ Claude Code can hit its usage limit in the middle of a task, and from that momen
 | A turn stops on an API error (`rate_limit`, `server_error`…) | `StopFailure` | The same checkpoint, without the 60 s limit, **plus** `.claude-continuity/HANDOFF.md` at the project root |
 | Before a compaction | `PreCompact` | The [compaction shield](#compaction-shield-claude-code), unchanged |
 
-The newest 10 autosave checkpoints are kept. Each one holds your last 5 requests, Claude's last message (up to 600 characters), the open todos, the files edited and read, the git state (branch, last commit, uncommitted files) and the project rules. The plugin ships both new hooks. For a manual install, register `hooks/autosave.py` under `Stop` and `StopFailure` the same way as the shield (`python /path/to/claude-continuity-mcp/hooks/autosave.py`).
+The newest 10 autosave checkpoints are kept across all projects and sessions (an idle project's autosave can be pruned by other projects' activity). Each one holds your last 5 requests, Claude's last message (up to 600 characters), the open todos, the files edited and read, and the git state (branch, last commit, uncommitted files). It does not store the project rules: only `HANDOFF.md` and the paste text include them. The plugin registers `hooks/autosave.py` for both `Stop` and `StopFailure`. For a manual install, register `hooks/autosave.py` under `Stop` and `StopFailure` the same way as the shield (`python /path/to/claude-continuity-mcp/hooks/autosave.py`).
 
 **Three ways to read it**
 
@@ -426,6 +426,8 @@ claude plugin install project-continuity@project-continuity
 
 Then restart Claude Code. Inside a session you can do the same with `/plugin marketplace add gabicacabelos/claude-continuity-mcp` and `/plugin install project-continuity@project-continuity`. To update later: `claude plugin update project-continuity@project-continuity`.
 
+From v3.10 the plugin also registers the `Stop` and `StopFailure` autosave hooks. They are on by default: see [Handoff and autosave](#handoff-and-autosave) for what they save and how to turn them off.
+
 **Claude Code — server only** (tools only: no compaction shield, no bundled skill):
 
 ```bash
@@ -478,7 +480,7 @@ The command is always the same: `uvx claude-continuity-mcp`.
 | VS Code / Copilot | `.vscode/mcp.json` | `{"servers": {"project-continuity": {"type": "stdio", "command": "uvx", "args": [...]}}}` |
 | Codex CLI | `~/.codex/config.toml` | `[mcp_servers.project-continuity]` with `command = "uvx"` and `args = [...]` |
 
-`args` is `["claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
+`args` is `["claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start", "Taking over from another agent" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
 
 ### Manual install (git clone)
 
@@ -609,7 +611,7 @@ This server reads files from your disk and persists what it reads. Worth knowing
 1. **Deny-list, always on (no configuration needed).** Credentials and key material are never read and never stored: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `.env` (and `.env.*`), `*.pem`, `*.key`, `*.p12`, `*.kdbx`, `.netrc`, `.pgpass`, shell history, and similar. Paths are fully resolved (symlinks and `..`) *before* validation, so traversal like `proj/../../.ssh/id_rsa` is rejected too.
 2. **Allow-list, opt-in (strict mode).** Set `allowed_roots` in `router_config.json` and anything outside those roots is refused — for reads, for project indexing, and for passive capture. Empty by default so a fresh install doesn't break; recommended if you work on machines holding third-party data.
 
-**What gets persisted, and where.** Every file read through `smart_read` (and every file captured by the optional hook) is stored in `cache/ledger.db` — **including a full plaintext snapshot** of files up to 400 KB, kept for 30 days. That's what makes diff reads possible. The DB is local and gitignored, but it is *not* encrypted: treat `cache/` as sensitive as the projects you point this at. Delete it any time; it rebuilds itself.
+**What gets persisted, and where.** Every file read through `smart_read` (and every file captured by the optional hook) is stored in `cache/ledger.db` — **including a full plaintext snapshot** of files up to 400 KB, kept for 30 days. That's what makes diff reads possible. The DB is local and gitignored, but it is *not* encrypted: treat `cache/` as sensitive as the projects you point this at. Delete it any time; it rebuilds itself. With autosave on (the default, from v3.10), each turn end also stores your last 5 requests and Claude's last message under `~/.claude-continuity/checkpoints/`: masked for credential shapes, otherwise plaintext. When an API error stops a session, `.claude-continuity/HANDOFF.md` may also be written in the project. The switches are in [Handoff and autosave](#handoff-and-autosave).
 
 **Content-level secret redaction.** The path deny-list above blocks known credential *files* (`.env`, `*.pem`...) — it doesn't help when a real secret is hardcoded inside an ordinary source file. Before content is returned or persisted (`smart_read`, passive capture, project search), it's scanned for recognizable credential shapes — AWS access keys, GitHub/OpenAI/Anthropic/Slack tokens, JWTs, private-key blocks, and quoted `password=`/`api_key=`-style assignments — and matches are masked in place (`AKIA█REDACTED█`), never stored or shown in full. This is shape-based pattern matching, not a secret scanner: it won't catch a credential that doesn't look like one of these formats, and unquoted values are deliberately not touched (too easy to confuse with a variable reference like `token = getToken()`). Determinism holds — same secret value always redacts to the same mask, so diffs still detect real changes without exposing either value.
 
