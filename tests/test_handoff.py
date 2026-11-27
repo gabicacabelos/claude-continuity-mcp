@@ -13,6 +13,7 @@ import pytest
 
 from router import compaction as C
 from router import gitstate as G
+from router import transcripts as T
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
@@ -240,3 +241,146 @@ def test_add_local_exclude_creates_info_dir_and_keeps_existing_lines(tmp_path):
     (info / "exclude").write_text("*.log", encoding="utf-8")
     assert G.add_local_exclude(repo, ".claude-continuity/")
     assert (info / "exclude").read_text(encoding="utf-8") == "*.log\n.claude-continuity/\n"
+
+
+# ─── Tarea 3: ubicar la transcripción de Claude Code de un proyecto ───
+
+def _session(projects, folder, name, mtime, **kw):
+    """Crea `projects/<folder>/<name>.jsonl` (vía `_transcript`) con el mtime dado y devuelve su ruta."""
+    d = Path(projects) / folder
+    d.mkdir(parents=True, exist_ok=True)
+    f = _transcript(d / f"{name}.jsonl", ["hi"], **kw)
+    os.utime(f, (mtime, mtime))
+    return f
+
+
+def test_encode_project_dir_matches_claude_code_layout():
+    assert T.encode_project_dir("/home/user/claude-continuity-mcp") == "-home-user-claude-continuity-mcp"
+    assert T.encode_project_dir("C:\\work\\shop-app") == "C--work-shop-app"
+    assert T.encode_project_dir(Path("/a/b.c_d")) == "-a-b-c-d"
+
+
+def test_find_transcript_picks_newest_session_or_the_requested_one(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    folder = T.encode_project_dir(proj)
+    older = _session(projects, folder, "old", 1_000_000)
+    newer = _session(projects, folder, "new", 2_000_000)
+    # un .jsonl dentro de subagents/ es más nuevo que ambos y no cuenta: solo el nivel superior
+    sub = projects / folder / "subagents"
+    sub.mkdir()
+    deeper = _transcript(sub / "agent-1.jsonl", ["sub"])
+    os.utime(deeper, (3_000_000, 3_000_000))
+    (projects / folder / "notes.txt").write_text("x", encoding="utf-8")
+    os.utime(projects / folder / "notes.txt", (4_000_000, 4_000_000))
+
+    assert T.find_transcript(proj, projects_dir=projects) == newer
+    assert T.find_transcript(str(proj), session_id="old", projects_dir=str(projects)) == older
+    assert T.find_transcript(proj, session_id="nope", projects_dir=projects) is None
+
+
+def test_find_transcript_falls_back_to_scanning_cwd(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    match = _session(projects, "unrelated-name", "mine", 2_000_000, cwd=proj)
+    _session(projects, "another-folder", "theirs", 3_000_000, cwd=tmp_path / "elsewhere")
+    assert T.find_transcript(proj, projects_dir=projects) == match
+    assert T.find_transcript(tmp_path / "other", projects_dir=projects) is None
+
+
+def test_find_transcript_fallback_looks_past_the_newest_file_of_a_folder(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    mine = _session(projects, "weird", "mine", 1_000_000, cwd=proj)
+    # la más nueva de la carpeta es de otro proyecto: no alcanza con mirar solo esa
+    _session(projects, "weird", "other", 2_000_000, cwd=tmp_path / "elsewhere")
+    assert T.find_transcript(proj, projects_dir=projects) == mine
+
+
+def test_find_transcript_fallback_takes_the_newest_match_across_folders(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    _session(projects, "f1", "a", 1_000_000, cwd=proj)
+    newest = _session(projects, "f2", "b", 3_000_000, cwd=proj)
+    _session(projects, "f3", "c", 2_000_000, cwd=proj)
+    assert T.find_transcript(proj, projects_dir=projects) == newest
+
+
+def test_find_transcript_fallback_reads_only_the_first_50_lines_and_skips_junk(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    d = projects / "odd"
+    d.mkdir(parents=True)
+    junk = ["not json at all", "[1, 2]", '"str"', "42", "null", '{"cwd": 7}', '{"cwd": ""}', "{broken", ""]
+    # cwd ajeno en una línea antes: sigue leyendo hasta la que coincide (línea 12, dentro de las 50)
+    inside = d / "inside.jsonl"
+    inside.write_text("\n".join(junk + ['{"cwd": "/elsewhere"}', '{"type": "user"}', json.dumps({"cwd": str(proj)})]) + "\n",
+                      encoding="utf-8")
+    assert T.find_transcript(proj, projects_dir=projects) == inside
+    inside.unlink()
+    # el cwd aparece recién en la línea 51: queda fuera de la ventana
+    late = d / "late.jsonl"
+    late.write_text("\n".join(['{"type": "user"}'] * 50 + [json.dumps({"cwd": str(proj)})]) + "\n", encoding="utf-8")
+    assert T.find_transcript(proj, projects_dir=projects) is None
+    # bytes que no son UTF-8 no rompen la lectura
+    late.write_bytes(b"\xff\xfe\x00 garbage\n" + json.dumps({"cwd": str(proj)}).encode("utf-8") + b"\n")
+    assert T.find_transcript(proj, projects_dir=projects) == late
+
+
+def test_find_transcript_fallback_examines_at_most_the_20_newest_files_per_folder(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    mine = _session(projects, "busy", "mine", 1_000, cwd=proj)  # la más vieja de 21: queda fuera
+    for i in range(20):
+        _session(projects, "busy", f"s{i}", 10_000 + i, cwd=tmp_path / "elsewhere")
+    assert T.find_transcript(proj, projects_dir=projects) is None
+    os.utime(mine, (99_000, 99_000))  # ahora está entre las 20 más nuevas
+    assert T.find_transcript(proj, projects_dir=projects) == mine
+
+
+def test_find_transcript_fallback_compares_paths_normalized(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    match = _session(projects, "odd", "s", 1_000_000, cwd=str(proj) + os.sep + "sub" + os.sep + "..")
+    assert T.find_transcript(proj, projects_dir=projects) == match
+    assert T.find_transcript(str(proj) + os.sep, projects_dir=projects) == match
+
+
+def test_find_transcript_fallback_with_session_id_only_considers_that_file(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    wanted = _session(projects, "odd", "wanted", 1_000_000, cwd=proj)
+    _session(projects, "odd", "newer", 2_000_000, cwd=proj)
+    _session(projects, "odd2", "wanted", 3_000_000, cwd=tmp_path / "elsewhere")  # mismo nombre, otro proyecto
+    assert T.find_transcript(proj, session_id="wanted", projects_dir=projects) == wanted
+    assert T.find_transcript(proj, session_id="missing", projects_dir=projects) is None
+
+
+def test_find_transcript_rejects_session_ids_that_escape_the_folder(tmp_path):
+    proj, projects = tmp_path / "proj", tmp_path / "projects"
+    _session(projects, T.encode_project_dir(proj), "real", 1_000_000)
+    _transcript(projects / "outside.jsonl", ["x"], cwd=proj)  # lo alcanzaría "../outside" si no se filtrara
+    for bad in ("../outside", "sub/real", "", ".", os.sep + "abs"):
+        assert T.find_transcript(proj, session_id=bad, projects_dir=projects) is None
+
+
+def test_find_transcript_never_raises_on_odd_input(tmp_path):
+    assert T.find_transcript(tmp_path / "proj", projects_dir=tmp_path / "does-not-exist") is None
+    assert T.find_transcript("", projects_dir=tmp_path) is None
+    assert T.find_transcript(tmp_path / "proj", projects_dir=tmp_path / "file.txt") is None
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+    assert T.find_transcript(tmp_path / "proj", projects_dir=tmp_path / "file.txt") is None
+    # una carpeta llamada *.jsonl no es una transcripción
+    projects = tmp_path / "projects"
+    (projects / T.encode_project_dir(tmp_path / "proj") / "dir.jsonl").mkdir(parents=True)
+    assert T.find_transcript(tmp_path / "proj", projects_dir=projects) is None
+
+
+def test_claude_projects_dir_honors_config_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    assert T.claude_projects_dir() == tmp_path / "projects"
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert T.claude_projects_dir() == Path.home() / ".claude" / "projects"
+    # vacía o solo espacios cuenta como no definida
+    for blank in ("", "   "):
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", blank)
+        assert T.claude_projects_dir() == Path.home() / ".claude" / "projects"
+
+
+def test_find_transcript_defaults_to_claude_projects_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    proj = tmp_path / "proj"
+    f = _session(tmp_path / "cfg" / "projects", T.encode_project_dir(proj), "s", 1_000_000)
+    assert T.find_transcript(proj) == f
