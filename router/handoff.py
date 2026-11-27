@@ -318,10 +318,20 @@ def save_autosave(h: dict, checkpoints_dir: str | Path) -> str:
 
     # El recién escrito va primero y nunca se poda (con relojes corridos podría parecer el más viejo);
     # el resto, por mtime descendente y, ante un empate, por nombre: el resultado no depende del disco.
-    autos = sorted(cps.glob(f"{AUTOSAVE_PREFIX}*.json"),
-                   key=lambda p: (p.name == current, p.stat().st_mtime, p.name), reverse=True)
-    for old in autos[MAX_AUTOSAVES:]:
-        old.unlink(missing_ok=True)
+    # Otra ventana puede borrar un autoguardado entre el glob y el stat (el límite de uso es por cuenta:
+    # todas las ventanas podan a la vez): ese archivo no cuenta, y un fallo al borrar no frena el resto.
+    autos = []
+    for p in cps.glob(f"{AUTOSAVE_PREFIX}*.json"):
+        try:
+            autos.append((p.name == current, p.stat().st_mtime, p.name, p))
+        except OSError:
+            continue
+    autos.sort(key=lambda t: t[:3], reverse=True)
+    for *_, old in autos[MAX_AUTOSAVES:]:
+        try:
+            old.unlink(missing_ok=True)
+        except OSError:
+            pass
     return name
 
 

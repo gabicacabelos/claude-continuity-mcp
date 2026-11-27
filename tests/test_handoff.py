@@ -1022,6 +1022,71 @@ def test_save_autosave_never_prunes_the_checkpoint_it_just_wrote(tmp_path):
     assert not (cps / "autosave-old0.json").exists() and (cps / "autosave-old1.json").exists()
 
 
+def _seed_autosaves(cps, n, base=1_700_000_000):
+    cps.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        f = cps / f"autosave-old{i:02d}.json"
+        f.write_text("{}", encoding="utf-8")
+        os.utime(f, (base + i, base + i))
+
+
+def test_pruning_survives_a_file_that_vanishes_between_the_glob_and_the_stat(tmp_path, monkeypatch):
+    # otra ventana (el límite de uso es por cuenta: todas podan a la vez) borra un autoguardado a mitad de la poda
+    cps = tmp_path / "checkpoints"
+    _seed_autosaves(cps, H.MAX_AUTOSAVES + 2)
+    real_stat = Path.stat
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.name == "autosave-old05.json":
+            raise FileNotFoundError(self.name)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    assert H.save_autosave(_h(session_id="new"), cps) == "autosave-new"
+    monkeypatch.undo()
+    left = sorted(p.name for p in cps.glob("autosave-*.json"))
+    # el que desapareció no cuenta: quedan el nuevo y los 9 más nuevos de los demás
+    assert "autosave-new.json" in left and "autosave-old05.json" in left  # en disco, pero no cuenta
+    assert "autosave-old00.json" not in left and "autosave-old01.json" not in left
+
+
+def test_pruning_survives_an_unlink_that_fails(tmp_path, monkeypatch):
+    cps = tmp_path / "checkpoints"
+    _seed_autosaves(cps, H.MAX_AUTOSAVES + 3)
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self.name == "autosave-old00.json":
+            raise PermissionError(self.name)  # Windows: otro proceso lo tiene abierto
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    assert H.save_autosave(_h(session_id="new"), cps) == "autosave-new"
+    monkeypatch.undo()
+    # el que no se pudo borrar queda; los demás sobrantes sí se borraron
+    assert (cps / "autosave-old00.json").exists() and not (cps / "autosave-old01.json").exists()
+    assert not (cps / "autosave-old02.json").exists() and (cps / "autosave-new.json").is_file()
+
+
+def test_capture_still_writes_handoff_md_when_a_file_vanishes_while_pruning(tmp_path, monkeypatch):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    _seed_autosaves(home / "checkpoints", H.MAX_AUTOSAVES + 2)
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    real_stat = Path.stat
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.name == "autosave-old05.json":
+            raise FileNotFoundError(self.name)
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", flaky_stat)
+    out = H.capture(t, proj, "sid-1", "rate_limit", home, write_file=True)
+    monkeypatch.undo()
+    assert out["checkpoint"] == "autosave-sid-1"
+    assert out["file"] == proj / ".claude-continuity" / "HANDOFF.md" and out["file"].is_file()
+    assert (home / "checkpoints" / "autosave-sid-1.json").is_file()
+
+
 def test_two_sessions_never_overwrite_each_other(tmp_path):
     cps = tmp_path / "checkpoints"
     a = H.save_autosave(_h(_h_state(prompts=["request from window A"]), session_id="a"), cps)
