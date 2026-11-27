@@ -53,7 +53,7 @@ Entradas que el diseño implica y ningún test del camino feliz cubre; cada una 
 
 ---
 
-### Tarea 1: `extract_session_state` devuelve el último mensaje del asistente y el `cwd`
+### Task 1: `extract_session_state` devuelve el último mensaje del asistente y el `cwd`
 
 **Files:**
 - Modify: `router/compaction.py` (`extract_session_state`, constantes)
@@ -101,7 +101,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 2: `router/gitstate.py`
+### Task 2: `router/gitstate.py`
 
 **Files:**
 - Create: `router/gitstate.py`
@@ -166,7 +166,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 3: `router/transcripts.py`
+### Task 3: `router/transcripts.py`
 
 **Files:**
 - Create: `router/transcripts.py`
@@ -216,7 +216,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 4: `router/handoff.py` — armar y dibujar
+### Task 4: `router/handoff.py` — armar y dibujar
 
 **Files:**
 - Create: `router/handoff.py`
@@ -284,7 +284,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 5: guardar el handoff — checkpoint, archivo, límite de frecuencia, mini-config, `capture`
+### Task 5: guardar el handoff — checkpoint, archivo, límite de frecuencia, mini-config, `capture`
 
 **Files:**
 - Modify: `router/handoff.py`
@@ -368,7 +368,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 6: hook `hooks/autosave.py` y registro en `hooks.json`
+### Task 6: hook `hooks/autosave.py` y registro en `hooks.json`
 
 **Files:**
 - Create: `hooks/autosave.py`
@@ -428,7 +428,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 7: comando `claude-continuity-handoff`
+### Task 7: comando `claude-continuity-handoff`
 
 **Files:**
 - Create: `router/handoff_cli.py`
@@ -494,7 +494,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 8: `router_checkpoint resume` con `project_dir` y campos nuevos
+### Task 8: `router_checkpoint resume` con `project_dir` y campos nuevos
 
 **Files:**
 - Modify: `server.py` (`CheckpointInput`, rama `resume` de `router_checkpoint`, `prompt_resume`)
@@ -553,7 +553,7 @@ git push origin ccr-54d3dcfa-aegv8j
 
 ---
 
-### Tarea 9: documentación y verificación final
+### Task 9: documentación y verificación final
 
 **Files:**
 - Modify: `README.md`, `skills/project-continuity/SKILL.md`, `router_config.example.json`
