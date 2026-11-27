@@ -182,7 +182,7 @@ only if you are Cowork or Design, which share Claude Desktop's connection.
 orders arrived: read them with `check` or `history`. If your agent can run a background command
 and wake up when it ends (Claude Code, Antigravity), run the `watch_cmd` that `send` returns
 before ending your turn. It waits for the reply and exits as soon as it lands. Equivalent:
-`uvx --from claude-continuity-mcp==3.9.2 claude-continuity-watch --to <you> --order <id>`.
+`uvx --from claude-continuity-mcp==3.10.0 claude-continuity-watch --to <you> --order <id>`.
 For a session-start or pre-turn hook, `… claude-continuity-watch --to <you> --once --exit-zero`
 peeks once and prints `{}` when there is nothing, even before the MCP has ever run (the Claude Code
 plugin already ships this hook). If two agents don't see each other's orders,

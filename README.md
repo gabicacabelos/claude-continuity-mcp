@@ -36,7 +36,7 @@ Claude Code   watcher exits 0 with the reply → resumes by itself (7.5 s in a r
 **Also:** memory across sessions and clients, a compaction shield, "why did we do this?", project rules and an honest
 savings report (below).
 
-**New in v3.10 (next release):**
+**New in v3.10:**
 - 🔁 **Handoff and autosave** — when Claude Code stops mid-task, another agent can pick up where it left off: an automatic checkpoint every turn, a `HANDOFF.md` and a text to paste into a web chat ([details](#handoff-and-autosave)).
 
 **New in v3.8:**
@@ -222,19 +222,19 @@ nothing running in the background unless an agent asks for it:
 Run the watcher (the package's second command):
 
 ```bash
-uvx --from claude-continuity-mcp==3.9.2 claude-continuity-watch --to code --timeout 900
+uvx --from claude-continuity-mcp==3.10.0 claude-continuity-watch --to code --timeout 900
 ```
 
 To wait for the reply to one specific order (`router_inbox action=send` already returns this line as `watch_cmd`):
 
 ```bash
-uvx --from claude-continuity-mcp==3.9.2 claude-continuity-watch --to code --order 52
+uvx --from claude-continuity-mcp==3.10.0 claude-continuity-watch --to code --order 52
 ```
 
 To type just `claude-continuity-watch`, put it on your PATH once:
 
 ```bash
-uv tool install claude-continuity-mcp==3.9.2
+uv tool install claude-continuity-mcp==3.10.0
 ```
 
 **Hooks in other agents:** to peek once (for a session-start or pre-turn hook), run
@@ -348,7 +348,7 @@ Both hooks fail silently: whatever happens, they never block or break your sessi
 
 ## Handoff and autosave
 
-*From v3.10 (next release). The `claude-continuity-handoff` command does not exist in the 3.9.x releases on PyPI.*
+*Needs v3.10 or later: the `claude-continuity-handoff` command does not exist in the 3.9.x releases.*
 
 Claude Code can hit its usage limit in the middle of a task, and from that moment the model can't call any tool: it can't save a checkpoint or leave a note. If you then continue in another agent (Antigravity, Cursor, Codex…) or in a web chat, it starts from zero. So this part doesn't rely on the model: hooks save the state themselves. It is extracted from the session transcript and from git, never summarized by an LLM, and anything that looks like a credential is masked.
 
@@ -364,12 +364,12 @@ The newest 10 autosave checkpoints are kept across all projects and sessions (an
 
 **Three ways to read it**
 
-1. **In an MCP agent:** `/resume`, or `router_checkpoint action=resume project_dir=<repo>`. `project_dir` returns the newest checkpoint *of that project* (a folder inside the repo works), and an autosave also carries `project_dir`, `stopped_by`, `git` and `last_assistant`. The `project_dir` argument of `resume` and the `claude-continuity-handoff` command both need v3.10 (next release): an older server rejects the argument, so call `resume` without it there.
+1. **In an MCP agent:** `/resume`, or `router_checkpoint action=resume project_dir=<repo>`. `project_dir` returns the newest checkpoint *of that project* (a folder inside the repo works), and an autosave also carries `project_dir`, `stopped_by`, `git` and `last_assistant`. The `project_dir` argument of `resume` and the `claude-continuity-handoff` command both need v3.10 or later: an older server rejects the argument, so call `resume` without it there.
 2. **As a file:** `.claude-continuity/HANDOFF.md` at the project root, written when an API error stops the session or with `--write`. Any agent that can read files can use it, with or without the MCP.
 3. **As text to paste:** `claude-continuity-handoff` prints up to 3000 characters for a chat. v0 and Perplexity can't see your disk, so for them paste is the only way. If the text doesn't fit it drops the list of files read first, then the oldest requests.
 
 ```bash
-# from v3.10 (next release), in the project folder
+# v3.10 or later, in the project folder
 uvx --from claude-continuity-mcp claude-continuity-handoff
 # from a git clone, at the repo root (pass --project <folder> for your project)
 python -m router.handoff_cli
