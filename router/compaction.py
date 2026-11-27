@@ -57,7 +57,9 @@ def _human_prompt(text: str) -> str | None:
     t = _PASTED.sub(lambda m: "[pasted] " + m.group(1).strip(), t).strip()
     if not t or t.startswith("<"):
         return None
-    return " ".join(t.split())[:MAX_PROMPT_CHARS]
+    # primero se enmascara el texto completo: si se cortara antes, una clave que cruza el tope
+    # quedaría como un parcial que el patrón ya no reconoce
+    return " ".join(redact_secrets(t)[0].split())[:MAX_PROMPT_CHARS]
 
 
 def extract_session_state(transcript_path: str | Path) -> dict:
@@ -78,7 +80,9 @@ def extract_session_state(transcript_path: str | Path) -> dict:
                 entry = json.loads(raw)
             except ValueError:
                 continue
-            if isinstance(entry.get("cwd"), str):
+            if not isinstance(entry, dict):  # 123, null, [], "texto": JSON válido pero no un objeto
+                continue
+            if isinstance(entry.get("cwd"), str) and entry["cwd"].strip():  # un cwd vacío no pisa uno válido
                 cwd = entry["cwd"]
             kind = entry.get("type")
             if kind not in ("user", "assistant"):
@@ -108,12 +112,16 @@ def extract_session_state(transcript_path: str | Path) -> dict:
                         read.remove(path)
                     read.append(path)
                 if isinstance(args.get("todos"), list):
-                    todos = [t.get("content", "") for t in args["todos"]
-                             if isinstance(t, dict) and t.get("status") != "completed" and t.get("content")]
+                    # una sola línea por tarea: con saltos de línea podría fabricar secciones en el handoff
+                    todos = [" ".join(t["content"].split()) for t in args["todos"]
+                             if isinstance(t, dict) and t.get("status") != "completed"
+                             and isinstance(t.get("content"), str) and t["content"].strip()]
     read = [p for p in read if p not in edited]  # lo editado ya figura como editado
+    # enmascarar antes de cortar (ver _human_prompt); se hace una sola vez, sobre el último texto
+    last_assistant = " ".join(redact_secrets(last_assistant)[0].split())[:MAX_LAST_ASSISTANT_CHARS]
     return {"prompts": prompts[-MAX_PROMPTS:], "edited": edited[-MAX_FILES:],
             "read": read[-MAX_FILES:], "todos": todos,
-            "last_assistant": " ".join(last_assistant.split())[:MAX_LAST_ASSISTANT_CHARS], "cwd": cwd}
+            "last_assistant": last_assistant, "cwd": cwd}
 
 
 def checkpoint_name(session_id: str) -> str:

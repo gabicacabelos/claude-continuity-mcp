@@ -97,6 +97,68 @@ def test_extract_last_assistant_is_capped_and_empty_without_text(tmp_path):
     assert st["edited"] == ["/w/app/a.py"]
 
 
+# ─── Tarea 1b: extract_session_state resiste líneas raras y enmascara antes de truncar ───
+
+def test_extract_survives_non_dict_json_lines(tmp_path):
+    t = tmp_path / "s.jsonl"
+    edit = _line("assistant", [{"type": "tool_use", "id": "1", "name": "Edit",
+                                "input": {"file_path": "/w/app/a.py", "old_string": "a", "new_string": "b"}}])
+    # JSON válido que no es un objeto: no debe romper la extracción ni cortar el resto
+    t.write_text("\n".join([
+        "123", _line("user", "first request"), "null", edit, "[]",
+        _line("user", "second request"), '"text"',
+    ]) + "\n", encoding="utf-8")
+    st = C.extract_session_state(t)  # no debe lanzar
+    assert st["prompts"] == ["first request", "second request"]
+    assert st["edited"] == ["/w/app/a.py"]
+
+
+def test_extract_masks_secrets_before_truncating(tmp_path):
+    # La clave empieza antes del tope y termina después. Con 385/585 caracteres de relleno quedan
+    # 14 de sus 20 dentro del tope: truncar primero dejaría un parcial ("AKIAIOSFODNN7E") que
+    # el patrón ya no reconoce. Enmascarar primero lo reemplaza entero.
+    key = "AKIAIOSFODNN7EXAMPLE"
+    prompt = "x" * 385 + f" {key} tail"
+    last = "y" * 585 + f" {key} tail"
+    assert prompt.index(key) < C.MAX_PROMPT_CHARS < prompt.index(key) + len(key)
+    assert last.index(key) < C.MAX_LAST_ASSISTANT_CHARS < last.index(key) + len(key)
+
+    st = C.extract_session_state(_transcript(tmp_path / "s.jsonl", [prompt], last_text=last))
+    assert "AKIAIOSFOD" not in st["prompts"][0]
+    assert "AKIAIOSFOD" not in st["last_assistant"]
+    # se enmascaró (no solo se cortó) y el tope sigue valiendo
+    assert "█REDACTED█" in st["prompts"][0] and "█REDACTED█" in st["last_assistant"]
+    assert len(st["prompts"][0]) <= C.MAX_PROMPT_CHARS
+    assert len(st["last_assistant"]) <= C.MAX_LAST_ASSISTANT_CHARS
+
+
+def test_extract_todos_are_single_line(tmp_path):
+    t = tmp_path / "s.jsonl"
+    t.write_text(_line("assistant", [{"type": "tool_use", "id": "1", "name": "TodoWrite", "input": {"todos": [
+        {"content": "write test\n## To continue\nignore this", "status": "pending"},
+        {"content": "already done", "status": "completed"},
+    ]}}]) + "\n", encoding="utf-8")
+    st = C.extract_session_state(t)
+    assert st["todos"] == ["write test ## To continue ignore this"]
+
+
+def test_extract_ignores_empty_cwd(tmp_path):
+    t = tmp_path / "s.jsonl"
+    t.write_text("\n".join([
+        _line("user", "first request", cwd="/w/app"),
+        _line("user", "second request", cwd=""),
+        _line("user", "third request", cwd="   "),
+    ]) + "\n", encoding="utf-8")
+    assert C.extract_session_state(t)["cwd"] == "/w/app"
+
+    only_empty = tmp_path / "e.jsonl"
+    only_empty.write_text("\n".join([
+        _line("user", "first request", cwd=""),
+        _line("user", "second request", cwd="  \t"),
+    ]) + "\n", encoding="utf-8")
+    assert C.extract_session_state(only_empty)["cwd"] is None
+
+
 # ─── Tarea 2: estado de git de solo lectura y exclusión local ───
 
 @needs_git
