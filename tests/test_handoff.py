@@ -146,6 +146,40 @@ def test_extract_todos_are_single_line(tmp_path):
     assert st["todos"] == ["write test ## To continue ignore this"]
 
 
+def test_extract_masks_secrets_in_todos_at_the_source(tmp_path):
+    # los todos van al checkpoint de PreCompact tal cual salen de acá: el enmascarado tiene que ser en el origen
+    t = tmp_path / "s.jsonl"
+    t.write_text(_line("assistant", [{"type": "tool_use", "id": "1", "name": "TodoWrite", "input": {"todos": [
+        {"content": f"rotate the key {AWS_KEY}\nthen redeploy", "status": "pending"},
+        {"content": "   ", "status": "pending"},
+        {"content": 42, "status": "pending"},
+        {"content": f"old {AWS_KEY}", "status": "completed"},
+    ]}}]) + "\n", encoding="utf-8")
+    st = C.extract_session_state(t)
+    assert len(st["todos"]) == 1 and "AKIAIOSFOD" not in st["todos"][0]
+    assert st["todos"][0] == "rotate the key AKIA█REDACTED█ then redeploy"
+
+
+def test_extract_keeps_only_text_file_paths_so_the_precompact_checkpoint_cannot_crash(tmp_path):
+    def tool(name, **inp):
+        return _line("assistant", [{"type": "tool_use", "id": "x", "name": name, "input": inp}])
+
+    t = tmp_path / "s.jsonl"
+    t.write_text("\n".join([
+        tool("Edit", file_path="/w/app/ok.py", old_string="a", new_string="b"),
+        tool("Edit", file_path=["/w/app/list.py"], old_string="a", new_string="b"),
+        tool("Write", file_path=123, content="x"),
+        tool("MultiEdit", file_path={"path": "/w/app/dict.py"}, edits=[]),
+        tool("Read", file_path=["/w/app/read-list.py"]),
+        tool("Read", file_path=7),
+        tool("Read", file_path="/w/app/read-ok.py"),
+    ]) + "\n", encoding="utf-8")
+    st = C.extract_session_state(t)
+    assert st["edited"] == ["/w/app/ok.py"] and st["read"] == ["/w/app/read-ok.py"]
+    # el camino del hook PreCompact hashea cada ruta: con una que no es texto lanzaría TypeError
+    assert C.save_compaction_checkpoint(st, tmp_path / "cps", "sid-1") == "autocompact-sid-1"
+
+
 def test_extract_ignores_empty_cwd(tmp_path):
     t = tmp_path / "s.jsonl"
     t.write_text("\n".join([

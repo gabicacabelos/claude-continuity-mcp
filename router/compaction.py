@@ -99,19 +99,20 @@ def extract_session_state(transcript_path: str | Path) -> dict:
                     if not isinstance(block, dict) or block.get("type") != "tool_use":
                         continue
                     name, args = block.get("name", ""), block.get("input") or {}
-                    if name in EDIT_TOOLS and args.get("file_path"):
-                        path = args["file_path"]
+                    # solo rutas de texto: una lista o un número en `file_path` rompería el hash del checkpoint
+                    path = args.get("file_path")
+                    if name in EDIT_TOOLS and isinstance(path, str) and path:
                         if path in edited:
                             edited.remove(path)
                         edited.append(path)  # el más reciente al final
-                    elif name in READ_TOOLS and args.get("file_path"):
-                        path = args["file_path"]
+                    elif name in READ_TOOLS and isinstance(path, str) and path:
                         if path in read:
                             read.remove(path)
                         read.append(path)
                     if isinstance(args.get("todos"), list):
-                        # una sola línea por tarea: con saltos de línea podría fabricar secciones en el handoff
-                        todos = [" ".join(t["content"].split()) for t in args["todos"]
+                        # una sola línea por tarea: con saltos de línea podría fabricar secciones en el handoff;
+                        # y enmascaradas acá, que es de donde las toma también el checkpoint de PreCompact
+                        todos = [" ".join(redact_secrets(t["content"])[0].split()) for t in args["todos"]
                                  if isinstance(t, dict) and t.get("status") != "completed"
                                  and isinstance(t.get("content"), str) and t["content"].strip()]
             except Exception:  # línea corrupta: se salta y el resto de la transcripción sigue valiendo

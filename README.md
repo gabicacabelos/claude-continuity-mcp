@@ -23,7 +23,7 @@ Claude Code   watcher exits 0 with the reply → resumes by itself (7.5 s in a r
   a background command finishes (Claude Code, Antigravity). Other MCP clients see new orders on their next call.
 - **Local and safe:** a SQLite file on your machine. Nothing executes an order on its own; order text is untrusted data.
 
-[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 412 tests on Windows, macOS and Linux.
+[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 414 tests on Windows, macOS and Linux.
 
 **Also:** memory across sessions and clients, a compaction shield, "why did we do this?", project rules and an honest
 savings report (below).
