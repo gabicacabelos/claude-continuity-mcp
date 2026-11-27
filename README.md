@@ -2,10 +2,18 @@
 
 [![tests](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml)
 
+<p align="center">
+  <a href="docs/media/presentation.mp4"><img src="docs/media/presentation.gif" alt="Claude Continuity: 22-second animated presentation (click for the video with sound)" width="420"></a>
+</p>
+
 **Your agents stop waiting for you to carry messages.** Claude Code hands a task to Antigravity, goes idle, and wakes up
 by itself the moment the reply lands. And they all share one project memory that survives `/compact` and new sessions.
 
 An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, and — bridged, see below — Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local and deterministic at its core, no API keys — the one exception is the Design bridge, which needs Google Drive since Design has no local access.
+
+▶ **Presentation video** (22 s, in Spanish, with sound):
+
+https://github.com/user-attachments/assets/fbd40a9f-42fa-4866-9ee3-8902cb4caa3a
 
 ## The live inbox: hand off, go idle, wake up
 
@@ -23,10 +31,13 @@ Claude Code   watcher exits 0 with the reply → resumes by itself (7.5 s in a r
   a background command finishes (Claude Code, Antigravity). Other MCP clients see new orders on their next call.
 - **Local and safe:** a SQLite file on your machine. Nothing executes an order on its own; order text is untrusted data.
 
-[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 220 tests on Windows, macOS and Linux.
+[How it works](#live-inbox-v39) · tested on a clean Windows profile in PowerShell, cmd and bash · 415 tests on Windows, macOS and Linux.
 
 **Also:** memory across sessions and clients, a compaction shield, "why did we do this?", project rules and an honest
 savings report (below).
+
+**New in v3.10 (next release):**
+- 🔁 **Handoff and autosave** — when Claude Code stops mid-task, another agent can pick up where it left off: an automatic checkpoint every turn, a `HANDOFF.md` and a text to paste into a web chat ([details](#handoff-and-autosave)).
 
 **New in v3.8:**
 - 🛡️ **Compaction shield** — Claude Code no longer forgets your requests, open tasks and project rules after `/compact` ([details](#compaction-shield-claude-code)).
@@ -335,6 +346,78 @@ The plugin ships both hooks (`hooks/hooks.json`, run with `uv`). For a manual in
 
 Both hooks fail silently: whatever happens, they never block or break your session. Shielded compactions are counted in the savings report. Hooks are a Claude Code feature; other clients don't have them.
 
+## Handoff and autosave
+
+*From v3.10 (next release). The `claude-continuity-handoff` command does not exist in the 3.9.x releases on PyPI.*
+
+Claude Code can hit its usage limit in the middle of a task, and from that moment the model can't call any tool: it can't save a checkpoint or leave a note. If you then continue in another agent (Antigravity, Cursor, Codex…) or in a web chat, it starts from zero. So this part doesn't rely on the model: hooks save the state themselves. It is extracted from the session transcript and from git, never summarized by an LLM, and anything that looks like a credential is masked.
+
+**What is saved, and when**
+
+| When | Hook | What is saved |
+|---|---|---|
+| End of every turn, at most once per 60 s per session | `Stop` | Checkpoint `autosave-<session>` in `~/.claude-continuity/checkpoints/`. Nothing is written in your project |
+| A turn stops on an API error (`rate_limit`, `server_error`…) | `StopFailure` | The same checkpoint, without the 60 s limit, **plus** `.claude-continuity/HANDOFF.md` at the project root |
+| Before a compaction | `PreCompact` | The [compaction shield](#compaction-shield-claude-code), unchanged |
+
+The newest 10 autosave checkpoints are kept across all projects and sessions (an idle project's autosave can be pruned by other projects' activity). Each one holds your last 5 requests, Claude's last message (up to 600 characters), the open todos, the files edited and read, and the git state (branch, last commit, uncommitted files). It does not store the project rules: only `HANDOFF.md` and the paste text include them. The plugin registers `hooks/autosave.py` for both `Stop` and `StopFailure`. For a manual install, register `hooks/autosave.py` under `Stop` and `StopFailure` the same way as the shield (`python /path/to/claude-continuity-mcp/hooks/autosave.py`).
+
+**Three ways to read it**
+
+1. **In an MCP agent:** `/resume`, or `router_checkpoint action=resume project_dir=<repo>`. `project_dir` returns the newest checkpoint *of that project* (a folder inside the repo works), and an autosave also carries `project_dir`, `stopped_by`, `git` and `last_assistant`. The `project_dir` argument of `resume` and the `claude-continuity-handoff` command both need v3.10 (next release): an older server rejects the argument, so call `resume` without it there.
+2. **As a file:** `.claude-continuity/HANDOFF.md` at the project root, written when an API error stops the session or with `--write`. Any agent that can read files can use it, with or without the MCP.
+3. **As text to paste:** `claude-continuity-handoff` prints up to 3000 characters for a chat. v0 and Perplexity can't see your disk, so for them paste is the only way. If the text doesn't fit it drops the list of files read first, then the oldest requests.
+
+```bash
+# from v3.10 (next release), in the project folder
+uvx --from claude-continuity-mcp claude-continuity-handoff
+# from a git clone, at the repo root (pass --project <folder> for your project)
+python -m router.handoff_cli
+```
+
+| Flag | What it does |
+|---|---|
+| `--project PROJECT` | Project folder (default: the current directory) |
+| `--session SESSION` | Session id (default: the newest session of the project) |
+| `--transcript TRANSCRIPT` | Path to the transcript `.jsonl`; skips the lookup |
+| `--format {paste,md,json}` | `paste` = short text for a chat (default); `md` = the content of `HANDOFF.md`; `json` |
+| `--max-chars MAX_CHARS` | Maximum length of the paste text (default 3000, minimum 200); `--format paste` only |
+| `--write` | Save the `autosave-<session>` checkpoint and write `.claude-continuity/HANDOFF.md` |
+| `--commit` | Implies `--write`; commit only `HANDOFF.md` |
+| `--push` | Implies `--commit`; push the branch with `git push -u origin HEAD` |
+| `--home HOME` | Data folder of the MCP (like `CLAUDE_CONTINUITY_HOME`) |
+
+The output goes to stdout and notices go to stderr. Nothing is written without `--write`. Exit codes: `0` ok · `1` the commit or push failed (the output is still printed) · `2` bad usage, or no local transcript (the session may have run in the cloud) · `3` the checkpoint or `HANDOFF.md` could not be saved (the output is still printed and nothing is committed).
+
+**Local and cloud**
+
+On your PC the checkpoints live in `~/.claude-continuity/`, shared by every MCP agent you use, so `/resume` in Antigravity or Cursor finds them. A Claude Code session in the cloud runs in a container: its `~/.claude-continuity/` is not on your PC and goes away with the container. The bridge is git, and it is explicit:
+
+```bash
+uvx --from claude-continuity-mcp claude-continuity-handoff --push
+```
+
+It writes `HANDOFF.md`, commits **only that file** and pushes the current branch (`--commit` stops before the push). Ask Claude to run it before the limit hits; then, on your PC, fetch the branch and open `.claude-continuity/HANDOFF.md`. Without a local transcript the command says so and exits with `2`.
+
+- **Nothing is ever committed or pushed automatically.** Only `--commit` and `--push` do it.
+- **The file contains your requests.** Secrets and tokens are masked; other private text is not. Read it before pushing to a repo other people can see. Once committed it is a normal tracked file: remove it from the branch when you're done.
+- **Work that isn't committed and pushed doesn't cross.** The handoff says so on its own line, for example `Not visible to you: 2 commits not pushed · 3 files modified, not committed`, and the bundled skill tells the receiving agent to relay it to you. The absence of that line is not proof that everything is pushed (see Limits below).
+
+**Privacy and switches**
+
+- Nothing leaves your machine on its own. The hooks never commit or push; only `--commit` and `--push` do, when you run them.
+- `.claude-continuity/` is added to `.git/info/exclude` (git's local ignore, which is never committed), so on this machine `HANDOFF.md` doesn't show up in `git status` and can't be committed by accident.
+- Turn the autosave off with `"autosave": false` in `router_config.json` (see [Hot configuration](#hot-configuration-router_configjson)) or with `CLAUDE_CONTINUITY_AUTOSAVE=0` (`0`, `false`, `off` or `no`). The compaction shield and the command are not affected.
+- If `allowed_roots` is set, the hooks skip any project outside those roots.
+
+**Limits, honestly**
+
+- **Claude Code only.** Hooks are a Claude Code feature. Other agents can read what Claude Code saved, but they don't save anything themselves.
+- **It's on by default for existing plugin users.** Once the plugin updates to a version that includes it (`claude plugin update project-continuity@project-continuity`, after the v3.10 release), every turn end writes a checkpoint file under `~/.claude-continuity/checkpoints/`. That's a change in behavior: use the switches above to turn it off.
+- **Not verified yet:** whether your plan's usage limit fires `StopFailure`, and whether the plugin's hooks run in cloud sessions. They can't be tested from this repo's suite: the checklist is in [`docs/handoff-manual-check.md`](docs/handoff-manual-check.md). The per-turn autosave doesn't depend on `StopFailure`, but it can lag: the checkpoint can be behind by up to the 60 s throttle, and the turn the limit cut off never reaches `Stop`, so its work is only captured if `StopFailure` fires. Also, `HANDOFF.md` is only written by `StopFailure` or by the command. The command needs no Claude, so if the file isn't there, run `claude-continuity-handoff --write` from a terminal.
+- **"Not visible to you" is a best effort, and its absence is not proof that everything is pushed.** With an upstream it counts the commits ahead of it. On a branch without an upstream (a never-pushed branch, the usual case in the cloud) it counts the commits that are on no remote and says `no upstream branch`. Either count uses the last fetch, so it can be out of date, and uncommitted files are always counted. Run `git status -sb` to be sure.
+- **It's an extract, not a summary.** The next agent gets what you asked, what Claude last said, the open todos and what changed on disk and in git, not why Claude was doing it.
+
 ## Installation
 
 No API key or `.env` file needed: all six tools are 100% local. You only need [uv](https://docs.astral.sh/uv/) (git is **not** required). The server is published on PyPI as [`claude-continuity-mcp`](https://pypi.org/project/claude-continuity-mcp/). The first launch downloads it (about 10–15 s); after that it starts from uv's cache in a few seconds, even offline.
@@ -350,6 +433,8 @@ claude plugin install project-continuity@project-continuity
 ```
 
 Then restart Claude Code. Inside a session you can do the same with `/plugin marketplace add gabicacabelos/claude-continuity-mcp` and `/plugin install project-continuity@project-continuity`. To update later: `claude plugin update project-continuity@project-continuity`.
+
+From v3.10 the plugin also registers the `Stop` and `StopFailure` autosave hooks. They are on by default: see [Handoff and autosave](#handoff-and-autosave) for what they save and how to turn them off.
 
 **Claude Code — server only** (tools only: no compaction shield, no bundled skill):
 
@@ -403,7 +488,7 @@ The command is always the same: `uvx claude-continuity-mcp`.
 | VS Code / Copilot | `.vscode/mcp.json` | `{"servers": {"project-continuity": {"type": "stdio", "command": "uvx", "args": [...]}}}` |
 | Codex CLI | `~/.codex/config.toml` | `[mcp_servers.project-continuity]` with `command = "uvx"` and `args = [...]` |
 
-`args` is `["claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
+`args` is `["claude-continuity-mcp"]` in every case. Agents that read `SKILL.md` can use the bundled skill as is. For the rest, paste its "Session start", "Taking over from another agent" and "Ending work" sections into the agent's rules file (`AGENTS.md`, `GEMINI.md`, `.cursor/rules`…). The compaction shield is Claude Code only, because it depends on hooks. Cross-agent identity is tested with a simulated MCP client, not yet inside each of these apps. If yours behaves differently, open an issue.
 
 ### Manual install (git clone)
 
@@ -521,6 +606,7 @@ Runtime tunables can be adjusted **without restarting the MCP**. Copy `router_co
 | `cache_enabled` | `true` | Query→fragments cache and embedding vector cache |
 | `auto_report` | `false` | Opt-in: attach the previous session's savings report to the first call after a long break. Off = manual `/report` only |
 | `report_gap_hours` | `6` | Hours without activity that end a working session (1–48) |
+| `autosave` | `true` | Handoff autosave ([details](#handoff-and-autosave)): a checkpoint at the end of each turn, and `HANDOFF.md` when an API error stops the session. Only a JSON `true`/`false` counts. Read by the Claude Code hooks, not by the server. `CLAUDE_CONTINUITY_AUTOSAVE=0` turns it off too |
 
 Values are type-checked and clamped to sane ranges; anything invalid falls back to its default instead of breaking the tool. If `router_config.json` doesn't exist, the defaults apply (zero-config). **Logic** changes (new code in `server.py`/`router/`) still require a restart — that's unavoidable; hot config only removes restarts for tunable adjustments.
 
@@ -533,7 +619,7 @@ This server reads files from your disk and persists what it reads. Worth knowing
 1. **Deny-list, always on (no configuration needed).** Credentials and key material are never read and never stored: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `.env` (and `.env.*`), `*.pem`, `*.key`, `*.p12`, `*.kdbx`, `.netrc`, `.pgpass`, shell history, and similar. Paths are fully resolved (symlinks and `..`) *before* validation, so traversal like `proj/../../.ssh/id_rsa` is rejected too.
 2. **Allow-list, opt-in (strict mode).** Set `allowed_roots` in `router_config.json` and anything outside those roots is refused — for reads, for project indexing, and for passive capture. Empty by default so a fresh install doesn't break; recommended if you work on machines holding third-party data.
 
-**What gets persisted, and where.** Every file read through `smart_read` (and every file captured by the optional hook) is stored in `cache/ledger.db` — **including a full plaintext snapshot** of files up to 400 KB, kept for 30 days. That's what makes diff reads possible. The DB is local and gitignored, but it is *not* encrypted: treat `cache/` as sensitive as the projects you point this at. Delete it any time; it rebuilds itself.
+**What gets persisted, and where.** Every file read through `smart_read` (and every file captured by the optional hook) is stored in `cache/ledger.db` — **including a full plaintext snapshot** of files up to 400 KB, kept for 30 days. That's what makes diff reads possible. The DB is local and gitignored, but it is *not* encrypted: treat `cache/` as sensitive as the projects you point this at. Delete it any time; it rebuilds itself. With autosave on (the default, from v3.10), each turn end also stores your last 5 requests and Claude's last message under `~/.claude-continuity/checkpoints/`: masked for credential shapes, otherwise plaintext. When an API error stops a session, `.claude-continuity/HANDOFF.md` may also be written in the project. The switches are in [Handoff and autosave](#handoff-and-autosave).
 
 **Content-level secret redaction.** The path deny-list above blocks known credential *files* (`.env`, `*.pem`...) — it doesn't help when a real secret is hardcoded inside an ordinary source file. Before content is returned or persisted (`smart_read`, passive capture, project search), it's scanned for recognizable credential shapes — AWS access keys, GitHub/OpenAI/Anthropic/Slack tokens, JWTs, private-key blocks, and quoted `password=`/`api_key=`-style assignments — and matches are masked in place (`AKIA█REDACTED█`), never stored or shown in full. This is shape-based pattern matching, not a secret scanner: it won't catch a credential that doesn't look like one of these formats, and unquoted values are deliberately not touched (too easy to confuse with a variable reference like `token = getToken()`). Determinism holds — same secret value always redacts to the same mask, so diffs still detect real changes without exposing either value.
 

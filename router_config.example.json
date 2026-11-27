@@ -11,5 +11,8 @@
 
   "_auto_report": "OPT-IN (apagado por defecto). Si lo activás, al volver tras una pausa de report_gap_hours (1-48) o más, la primera respuesta trae el reporte de ahorro de la jornada anterior. Apagado = solo el reporte manual (/report).",
   "auto_report": false,
-  "report_gap_hours": 6
+  "report_gap_hours": 6,
+
+  "_autosave": "OPT-OUT (encendido por defecto). Los hooks de Claude Code (Stop y StopFailure) guardan un checkpoint autosave-<sesión> al terminar cada turno (como mucho uno por minuto) y, si un error de la API corta la sesión, también .claude-continuity/HANDOFF.md en la raíz del proyecto, para retomar en otro agente. Lo leen los hooks; el servidor MCP ignora esta clave. Para apagarlo: false, o la variable de entorno CLAUDE_CONTINUITY_AUTOSAVE=0. Con allowed_roots no vacío, un proyecto fuera de esas raíces no se autoguarda.",
+  "autosave": true
 }
