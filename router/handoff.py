@@ -25,6 +25,7 @@ MAX_PASTE_CHARS = 3000
 AUTOSAVE_PREFIX = "autosave-"
 MAX_AUTOSAVES = 10
 AUTOSAVE_MIN_INTERVAL = 60.0
+AUTOSAVE_CLOCK_SKEW = 5.0  # segundos de desfase entre la fecha del archivo y time.time() que se toleran
 HANDOFF_DIR = ".claude-continuity"
 HANDOFF_FILE = "HANDOFF.md"
 
@@ -358,14 +359,16 @@ def should_autosave(checkpoints_dir: str | Path, session_id: str, now: float | N
                     min_interval: float = AUTOSAVE_MIN_INTERVAL) -> bool:
     """
     False si el checkpoint de esa sesión se guardó hace menos de `min_interval` segundos. Sin
-    checkpoint, o con uno fechado en el futuro (reloj corrido), es True: no bloquea para siempre.
+    checkpoint, o con uno fechado muy en el futuro (reloj corrido), es True: no bloquea para siempre.
+    Un adelanto chico (hasta `AUTOSAVE_CLOCK_SKEW`) cuenta como recién guardado: en Windows la
+    fecha del archivo puede ir unos milisegundos por delante de `time.time()`.
     """
     try:
         mtime = (Path(checkpoints_dir) / f"{autosave_name(session_id)}.json").stat().st_mtime
     except OSError:
         return True
     elapsed = (time.time() if now is None else now) - mtime
-    return not (0 <= elapsed < min_interval)
+    return not (-AUTOSAVE_CLOCK_SKEW <= elapsed < min_interval)
 
 
 _AUTOSAVE_OFF = {"0", "false", "off", "no"}

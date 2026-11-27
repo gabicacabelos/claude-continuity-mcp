@@ -1194,6 +1194,17 @@ def test_should_autosave_is_not_blocked_by_a_checkpoint_from_the_future(tmp_path
     assert H.should_autosave(cps, "sid-1", now=now) is True
 
 
+def test_should_autosave_tolerates_a_slightly_advanced_mtime(tmp_path):
+    """En Windows la fecha del archivo puede ir por delante de time.time(): un checkpoint recién
+    guardado no puede contar como "sin checkpoint" (rompía el límite de frecuencia a veces)."""
+    cps = tmp_path / "checkpoints"
+    H.save_autosave(_h(), cps)
+    soon = time.time() + 2
+    os.utime(cps / "autosave-sid-1.json", (soon, soon))
+    assert H.should_autosave(cps, "sid-1") is False
+    assert H.should_autosave(cps, "sid-1", now=soon - H.AUTOSAVE_CLOCK_SKEW - 1) is True  # más allá de la tolerancia
+
+
 def test_read_hook_config_defaults_and_overrides(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CONTINUITY_AUTOSAVE", raising=False)
     defaults = {"autosave": True, "allowed_roots": []}
