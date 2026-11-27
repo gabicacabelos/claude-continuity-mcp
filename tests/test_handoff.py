@@ -525,11 +525,11 @@ def test_build_handoff_masks_secrets_everywhere():
 
 def test_build_handoff_has_the_pinned_keys(tmp_path):
     h = H.build_handoff(_h_state(), _h_git(), tmp_path, session_id="sid 1/x", stopped_by="turn_end",
-                        rules=["use tabs"], now=0)
+                        rules=["use tabs"], now=1_700_000_000)
     assert set(h) == {"session_id", "checkpoint", "project_dir", "saved_at", "ts", "stopped_by", "prompts",
                       "last_assistant", "todos", "edited", "read", "git", "rules"}
     assert h["session_id"] == "sid 1/x" and h["checkpoint"] == "autosave-sid_1_x"
-    assert h["project_dir"] == str(tmp_path) and h["ts"] == 0 and h["rules"] == ["use tabs"]
+    assert h["project_dir"] == str(tmp_path) and h["ts"] == 1_700_000_000 and h["rules"] == ["use tabs"]
     assert h["prompts"] == ["fix the refresh flow", "add the refresh test"]
     assert h["edited"] == ["/w/app/auth.py"] and h["read"] == ["/w/app/models.py"]
     assert h["todos"] == ["write the refresh test", "update the docs"]
@@ -738,3 +738,360 @@ def test_non_ascii_prompts_survive():
     h = _h(_h_state(prompts=[text]))
     assert text in H.render_markdown(h) and text in H.render_paste(h)
     assert text in json.dumps(h, ensure_ascii=False)
+
+
+# ─── Tarea 5: guardar el handoff (checkpoint, archivo, límite de frecuencia, mini-config, capture) ───
+
+def _project(tmp_path, name="proj"):
+    """Carpeta de proyecto vacía (fuera de git) dentro de tmp_path."""
+    proj = tmp_path / name
+    proj.mkdir()
+    return proj
+
+
+def _temp_leftovers(root):
+    """Archivos temporales que quedaron bajo `root` (el guardado atómico no debe dejar ninguno)."""
+    return sorted(p.name for p in Path(root).rglob("*") if p.name.endswith(".tmp"))
+
+
+def test_autosave_constants_are_pinned():
+    assert H.AUTOSAVE_PREFIX == "autosave-" and H.MAX_AUTOSAVES == 10 and H.AUTOSAVE_MIN_INTERVAL == 60.0
+
+
+def test_save_autosave_writes_a_resumable_checkpoint(tmp_path):
+    proj = _project(tmp_path)
+    edited, read = proj / "auth.py", proj / "models.py"
+    edited.write_text("def refresh_token():\n    return 1\n", encoding="utf-8")
+    read.write_text("class User:\n    pass\n", encoding="utf-8")
+    cps = tmp_path / "checkpoints"
+    state = _h_state(prompts=["fix the refresh flow", "arreglá el login ñandú 🚀"], edited=[str(edited)],
+                     read=[str(read)], todos=["write the refresh test"])
+    h = H.build_handoff(state, _h_git(branch="main"), proj, session_id="sid-1", stopped_by="rate_limit",
+                        now=1_700_000_000)
+
+    name = H.save_autosave(h, cps)  # la carpeta todavía no existe: se crea
+
+    data = json.loads((cps / f"{name}.json").read_text(encoding="utf-8"))
+    assert name == "autosave-sid-1" and data["name"] == name
+    assert data["auto"] == "autosave" and data["stopped_by"] == "rate_limit"
+    assert data["open_items"] == ["write the refresh test"] and data["decisions"] == []
+    assert data["project_dir"] == str(proj) and data["git"]["branch"] == "main"
+    assert data["summary"] == ("Autosave (usage limit). Latest user requests: "
+                               "fix the refresh flow | arreglá el login ñandú 🚀")
+    assert data["saved_at"] == h["saved_at"] and data["ts"] == 1_700_000_000
+    assert data["last_assistant"] == "Next: write the refresh test"
+    assert data["edited"] == [str(edited)] and data["read"] == [str(read)]
+    assert [f["path"] for f in data["files"]] == [str(edited), str(read)]
+    assert [f["hash"] for f in data["files"]] == [C._file_hash(str(edited)), C._file_hash(str(read))]
+    assert all(f["hash"] for f in data["files"])
+
+
+def test_save_autosave_anchors_what_the_summary_cites_so_resume_can_verify_it(tmp_path):
+    from router import verify
+    proj = _project(tmp_path)
+    auth = proj / "auth.py"
+    auth.write_text("def refresh_token():\n    return 1\n", encoding="utf-8")
+    h = _h(_h_state(prompts=["fix the bug in `auth.py`"], edited=[str(auth)], read=[],
+                    todos=["call `refresh_token()` first"]))
+    data = json.loads((tmp_path / "checkpoints" / f"{H.save_autosave(h, tmp_path / 'checkpoints')}.json")
+                      .read_text(encoding="utf-8"))
+    assert {"ref": "auth.py", "path": str(auth)} in data["anchors"]
+    assert any(a.get("symbol") == "refresh_token" for a in data["anchors"])
+    assert verify.verify_anchors(data["anchors"])["issues"] == []
+    auth.unlink()  # al retomar, una ancla rota se detecta
+    assert verify.verify_anchors(data["anchors"])["issues"]
+
+
+def test_save_autosave_summary_without_requests_and_with_an_unknown_reason(tmp_path):
+    cps = tmp_path / "checkpoints"
+    quiet = _h(_h_state(prompts=[]), stopped_by="turn_end")
+    assert json.loads((cps / f"{H.save_autosave(quiet, cps)}.json").read_text(encoding="utf-8"))["summary"] == \
+        "Autosave (last saved turn)."
+    odd = _h(session_id="odd", stopped_by="overloaded_error")
+    summary = json.loads((cps / f"{H.save_autosave(odd, cps)}.json").read_text(encoding="utf-8"))["summary"]
+    assert summary.startswith("Autosave (overloaded_error). Latest user requests: ")
+
+
+def test_save_autosave_prunes_to_the_newest_ten_and_spares_other_checkpoints(tmp_path):
+    cps = tmp_path / "checkpoints"
+    cps.mkdir()
+    for other in ("refactor-auth", "autocompact-x"):  # los más viejos de la carpeta, pero no son autoguardados
+        (cps / f"{other}.json").write_text(json.dumps({"name": other}), encoding="utf-8")
+        os.utime(cps / f"{other}.json", (1_000, 1_000))
+    base = 1_700_000_000
+    for i in range(H.MAX_AUTOSAVES + 3):
+        sid = f"s{i:02d}"
+        assert H.save_autosave(_h(session_id=sid), cps) == f"autosave-{sid}"
+        os.utime(cps / f"autosave-{sid}.json", (base + i, base + i))
+    assert sorted(p.name for p in cps.glob("autosave-*.json")) == [f"autosave-s{i:02d}.json" for i in range(3, 13)]
+    assert (cps / "refactor-auth.json").is_file() and (cps / "autocompact-x.json").is_file()
+
+
+def test_save_autosave_never_prunes_the_checkpoint_it_just_wrote(tmp_path):
+    # diez autoguardados con mtime en el futuro (reloj adelantado), todos iguales: el nuevo es "más viejo"
+    cps = tmp_path / "checkpoints"
+    cps.mkdir()
+    future = time.time() + 100_000
+    for i in range(H.MAX_AUTOSAVES):
+        f = cps / f"autosave-old{i}.json"
+        f.write_text("{}", encoding="utf-8")
+        os.utime(f, (future, future))
+    name = H.save_autosave(_h(session_id="new"), cps)
+    assert (cps / f"{name}.json").is_file()
+    assert len(list(cps.glob("autosave-*.json"))) == H.MAX_AUTOSAVES
+    # con mtime empatado se va siempre el de nombre menor: el resultado no depende del orden del disco
+    assert not (cps / "autosave-old0.json").exists() and (cps / "autosave-old1.json").exists()
+
+
+def test_two_sessions_never_overwrite_each_other(tmp_path):
+    cps = tmp_path / "checkpoints"
+    a = H.save_autosave(_h(_h_state(prompts=["request from window A"]), session_id="a"), cps)
+    b = H.save_autosave(_h(_h_state(prompts=["request from window B"]), session_id="b"), cps)
+    assert a != b and sorted(p.name for p in cps.glob("*.json")) == ["autosave-a.json", "autosave-b.json"]
+    summary_a = json.loads((cps / f"{a}.json").read_text(encoding="utf-8"))["summary"]
+    summary_b = json.loads((cps / f"{b}.json").read_text(encoding="utf-8"))["summary"]
+    assert "window A" in summary_a and "window B" not in summary_a
+    assert "window B" in summary_b and "window A" not in summary_b
+
+
+def test_saving_is_atomic_and_leaves_no_temp_files(tmp_path):
+    cps, proj = tmp_path / "checkpoints", _project(tmp_path)
+    for _ in range(3):  # reescribir el mismo checkpoint y el mismo archivo
+        H.save_autosave(_h(), cps)
+        H.write_handoff_file(_h(), proj)
+    assert _temp_leftovers(tmp_path) == []
+
+    # si el reemplazo falla, se limpia el temporal, el original sigue intacto y el error se propaga
+    target = proj / "x.md"
+    H._atomic_write(target, "old")
+    with pytest.MonkeyPatch.context() as mp:
+        def boom(src, dst):
+            raise OSError("disk says no")
+
+        mp.setattr(H.os, "replace", boom)
+        with pytest.raises(OSError):
+            H._atomic_write(target, "new")
+    assert target.read_text(encoding="utf-8") == "old" and _temp_leftovers(tmp_path) == []
+    H._atomic_write(target, "ñandú 🚀")
+    assert target.read_text(encoding="utf-8") == "ñandú 🚀"
+
+
+@needs_git
+def test_write_handoff_file_keeps_git_clean(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    path = H.write_handoff_file(_h(), repo)
+    assert path == repo / ".claude-continuity" / "HANDOFF.md"
+    assert "# Handoff from Claude Code" in path.read_text(encoding="utf-8")
+    assert _git(repo, "status", "--porcelain") == ""  # el archivo no aparece en git
+    H.write_handoff_file(_h(), repo)  # se puede reescribir
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_write_handoff_file_outside_git_just_writes(tmp_path):
+    h = _h()
+    path = H.write_handoff_file(h, tmp_path)
+    assert path == tmp_path / ".claude-continuity" / "HANDOFF.md" and path.is_file()
+    assert path.read_text(encoding="utf-8") == H.render_markdown(h)
+
+
+def test_should_autosave_throttles_per_session(tmp_path):
+    cps = tmp_path / "checkpoints"
+    assert H.should_autosave(cps, "sid-1") is True  # ni la carpeta existe todavía
+    H.save_autosave(_h(), cps)
+    t = (cps / "autosave-sid-1.json").stat().st_mtime
+    assert H.should_autosave(cps, "sid-1", now=t + 10) is False
+    assert H.should_autosave(cps, "sid-1", now=t + 59.9) is False
+    assert H.should_autosave(cps, "sid-1", now=t + 60) is True
+    assert H.should_autosave(cps, "sid-1", now=t + 61) is True
+    assert H.should_autosave(cps, "other", now=t + 10) is True
+    assert H.should_autosave(cps, "sid-1", now=t + 10, min_interval=5) is True
+    assert H.should_autosave(cps, "sid-1") is False  # sin `now`: usa el reloj, recién guardado
+
+
+def test_should_autosave_is_not_blocked_by_a_checkpoint_from_the_future(tmp_path):
+    cps = tmp_path / "checkpoints"
+    H.save_autosave(_h(), cps)
+    now = time.time()
+    os.utime(cps / "autosave-sid-1.json", (now + 3600, now + 3600))  # reloj corrido: mtime adelantado
+    assert H.should_autosave(cps, "sid-1", now=now) is True
+
+
+def test_read_hook_config_defaults_and_overrides(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONTINUITY_AUTOSAVE", raising=False)
+    defaults = {"autosave": True, "allowed_roots": []}
+    assert H.read_hook_config(tmp_path) == defaults
+    assert H.read_hook_config(tmp_path / "missing") == defaults
+
+    cfg = tmp_path / "router_config.json"
+    cfg.write_text(json.dumps({"autosave": False, "allowed_roots": ["/w/app", "/w/lib"], "default_top_k": 3}),
+                   encoding="utf-8")
+    assert H.read_hook_config(tmp_path) == {"autosave": False, "allowed_roots": ["/w/app", "/w/lib"]}
+    cfg.write_text(json.dumps({"allowed_roots": "/w/app"}), encoding="utf-8")  # un solo texto se envuelve
+    assert H.read_hook_config(tmp_path) == {"autosave": True, "allowed_roots": ["/w/app"]}
+    cfg.write_text(json.dumps({"allowed_roots": ["/w/app", "  ", ""]}), encoding="utf-8")  # sin vacíos
+    assert H.read_hook_config(tmp_path)["allowed_roots"] == ["/w/app"]
+    cfg.write_text(json.dumps({"allowed_roots": ""}), encoding="utf-8")
+    assert H.read_hook_config(tmp_path)["allowed_roots"] == []
+    first, second = H.read_hook_config(tmp_path / "missing"), H.read_hook_config(tmp_path / "missing")
+    first["allowed_roots"].append("x")
+    assert second["allowed_roots"] == [], "cada llamada devuelve su propia lista"
+
+
+def test_read_hook_config_falls_back_to_defaults_on_garbage(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONTINUITY_AUTOSAVE", raising=False)
+    cfg = tmp_path / "router_config.json"
+    defaults = {"autosave": True, "allowed_roots": []}
+    for text in ("{broken", "", "[]", "null", '"autosave"', "[" * 100000):
+        cfg.write_text(text, encoding="utf-8")
+        assert H.read_hook_config(tmp_path) == defaults
+    cfg.write_bytes(b"\xff\xfe not utf-8")
+    assert H.read_hook_config(tmp_path) == defaults
+    cfg.unlink()
+    cfg.mkdir()  # una carpeta con ese nombre no se puede leer
+    assert H.read_hook_config(tmp_path) == defaults
+    cfg.rmdir()
+    # cada clave con el tipo equivocado cae a su default sin arrastrar a la otra
+    for bad in ("yes", 1, 0, None, "false", [True]):
+        cfg.write_text(json.dumps({"autosave": bad, "allowed_roots": ["/w/app"]}), encoding="utf-8")
+        assert H.read_hook_config(tmp_path) == {"autosave": True, "allowed_roots": ["/w/app"]}
+    for bad in (5, {"a": 1}, ["/w/app", 3], [["/w/app"]], None, True):
+        cfg.write_text(json.dumps({"autosave": False, "allowed_roots": bad}), encoding="utf-8")
+        assert H.read_hook_config(tmp_path) == {"autosave": False, "allowed_roots": []}
+
+
+def test_read_hook_config_env_var_forces_autosave_off(tmp_path, monkeypatch):
+    cfg = tmp_path / "router_config.json"
+    cfg.write_text(json.dumps({"autosave": True, "allowed_roots": ["/w/app"]}), encoding="utf-8")
+    for value in ("0", "false", "off", "no", "FALSE", " Off ", "No"):
+        monkeypatch.setenv("CLAUDE_CONTINUITY_AUTOSAVE", value)
+        assert H.read_hook_config(tmp_path) == {"autosave": False, "allowed_roots": ["/w/app"]}
+    assert H.read_hook_config(tmp_path / "missing")["autosave"] is False  # también sin archivo
+    # cualquier otro valor no cambia lo que dice el archivo
+    cfg.write_text(json.dumps({"autosave": False}), encoding="utf-8")
+    for value in ("1", "true", "on", "yes", "", "maybe"):
+        monkeypatch.setenv("CLAUDE_CONTINUITY_AUTOSAVE", value)
+        assert H.read_hook_config(tmp_path)["autosave"] is False
+    cfg.write_text(json.dumps({"autosave": True}), encoding="utf-8")
+    for value in ("1", "true", "", "maybe"):
+        monkeypatch.setenv("CLAUDE_CONTINUITY_AUTOSAVE", value)
+        assert H.read_hook_config(tmp_path)["autosave"] is True
+
+
+def test_collect_handoff_has_no_side_effects(tmp_path):
+    from router import rules as R
+    proj = _project(tmp_path)
+    R.add_rule(proj, "use tabs")
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    before.append("s.jsonl")
+
+    h = H.collect_handoff(t, proj, "sid-1", "manual")
+
+    assert h["checkpoint"] == "autosave-sid-1" and h["stopped_by"] == "manual" and h["session_id"] == "sid-1"
+    assert h["project_dir"] == str(proj) and h["prompts"] == ["fix the refresh flow"]
+    assert h["last_assistant"] == "done" and h["git"] == {"available": False}
+    assert h["rules"] == ["use tabs"]
+    assert not (proj / ".claude-continuity").exists() and list(tmp_path.glob("**/autosave-*.json")) == []
+    assert sorted(p.name for p in tmp_path.rglob("*")) == sorted(before)
+    json.dumps(h)
+
+
+@needs_git
+def test_collect_handoff_does_not_touch_the_repo_either(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    exclude = repo / ".git" / "info" / "exclude"
+    before = exclude.read_text(encoding="utf-8") if exclude.exists() else None
+    t = _transcript(tmp_path / "s.jsonl", ["fix it"])
+    h = H.collect_handoff(t, repo, "sid-1", "turn_end")
+    assert h["git"]["available"] is True and h["git"]["branch"] == "main"
+    assert not (repo / ".claude-continuity").exists() and _git(repo, "status", "--porcelain") == ""
+    assert (exclude.read_text(encoding="utf-8") if exclude.exists() else None) == before
+
+
+def test_collect_handoff_keeps_only_string_paths(tmp_path):
+    proj = _project(tmp_path)
+
+    def tool(name, path):
+        return _line("assistant", [{"type": "tool_use", "id": "x", "name": name, "input": {"file_path": path}}])
+
+    good_edit, good_read = str(proj / "a.py"), str(proj / "r.py")
+    t = tmp_path / "s.jsonl"
+    t.write_text("\n".join([_line("user", "fix it"), tool("Edit", good_edit), tool("Edit", 42),
+                            tool("Edit", ["b.py"]), tool("Read", 7), tool("Read", good_read)]) + "\n",
+                 encoding="utf-8")
+    h = H.collect_handoff(t, proj, "sid-1", "manual")
+    assert h["edited"] == [good_edit] and h["read"] == [good_read]
+    # con rutas que no son texto, el guardado (que hashea cada archivo) habría fallado
+    H.save_autosave(h, tmp_path / "checkpoints")
+
+
+def test_capture_without_file_leaves_the_project_untouched(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    out = H.capture(t, proj, "sid-1", "turn_end", home, write_file=False)
+    assert out["file"] is None and out["checkpoint"] == "autosave-sid-1"
+    assert not (proj / ".claude-continuity").exists() and list(proj.iterdir()) == []
+    assert (home / "checkpoints" / "autosave-sid-1.json").is_file()
+    assert out["handoff"]["stopped_by"] == "turn_end" and out["handoff"]["checkpoint"] == out["checkpoint"]
+
+
+def test_capture_writes_checkpoint_and_file_outside_git(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    out = H.capture(t, proj, "sid-1", "rate_limit", home, write_file=True)
+    assert out["file"] == proj / ".claude-continuity" / "HANDOFF.md"
+    assert out["file"].read_text(encoding="utf-8") == H.render_markdown(out["handoff"])
+    assert out["handoff"]["project_dir"] == str(proj)
+    data = json.loads((home / "checkpoints" / "autosave-sid-1.json").read_text(encoding="utf-8"))
+    assert data["stopped_by"] == "rate_limit" and data["project_dir"] == str(proj)
+    assert _temp_leftovers(tmp_path) == []
+
+
+@needs_git
+def test_capture_from_a_subdirectory_writes_at_the_repo_root(tmp_path):
+    from router import rules as R
+    repo = _init_repo(tmp_path / "repo")
+    R.add_rule(repo, "use tabs")
+    sub, home = repo / "src" / "api", tmp_path / "home"
+    sub.mkdir(parents=True)
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+
+    out = H.capture(t, sub, "sid-1", "rate_limit", home, write_file=True)
+
+    assert out["file"].resolve() == (repo / ".claude-continuity" / "HANDOFF.md").resolve() and out["file"].is_file()
+    assert not (sub / ".claude-continuity").exists() and not (repo / "src" / ".claude-continuity").exists()
+    assert Path(out["handoff"]["project_dir"]).resolve() == repo.resolve()
+    assert Path(out["handoff"]["git"]["root"]).resolve() == repo.resolve()
+    assert out["handoff"]["rules"] == ["use tabs"]
+    data = json.loads((home / "checkpoints" / "autosave-sid-1.json").read_text(encoding="utf-8"))
+    assert Path(data["project_dir"]).resolve() == repo.resolve()
+    # el archivo no ensucia git (lo único sin trackear es el archivo de reglas)
+    assert _git(repo, "status", "--porcelain") == "?? .claude-continuity-rules.json"
+
+
+def _assert_no_secret(texts):
+    for text in texts:
+        assert AWS_KEY not in text and "AKIAIOSFOD" not in text
+
+
+def test_capture_masks_a_pasted_secret_in_every_artifact(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", [f"use {AWS_KEY} for the upload"],
+                    last_text=f"I stored {AWS_KEY} in the config")
+    out = H.capture(t, proj, "sid-1", "rate_limit", home, write_file=True)
+    checkpoint = (home / "checkpoints" / "autosave-sid-1.json").read_text(encoding="utf-8")
+    markdown = out["file"].read_text(encoding="utf-8")
+    _assert_no_secret([checkpoint, markdown, H.render_paste(out["handoff"]), json.dumps(out["handoff"])])
+    assert "█REDACTED█" in checkpoint and "█REDACTED█" in markdown
+
+
+@needs_git
+def test_capture_masks_a_secret_in_the_commit_subject(tmp_path):
+    repo, home = _init_repo(tmp_path / "repo"), tmp_path / "home"
+    _git(repo, "commit", "--allow-empty", "-q", "-m", f"drop {AWS_KEY} from the config")
+    t = _transcript(tmp_path / "s.jsonl", ["fix it"])
+    out = H.capture(t, repo, "sid-1", "rate_limit", home, write_file=True)
+    checkpoint = (home / "checkpoints" / "autosave-sid-1.json").read_text(encoding="utf-8")
+    markdown = out["file"].read_text(encoding="utf-8")
+    _assert_no_secret([checkpoint, markdown, H.render_paste(out["handoff"])])
+    assert "drop AKIA█REDACTED█ from the config" in markdown  # el enmascarado deja 4 letras
