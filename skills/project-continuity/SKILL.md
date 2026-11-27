@@ -49,7 +49,10 @@ On a project you may have worked on before, before re-exploring files:
 
 1. `router_checkpoint` with `{"action": "resume", "project_dir": "<project root>"}`
    (`project_dir` returns the latest checkpoint of this project; without it you get
-   the newest one of any project. Add `name` instead if the user names a task). It
+   the newest one of any project. Add `name` instead if the user names a task.
+   `project_dir` requires claude-continuity-mcp v3.10 or later; if the server rejects
+   the argument (older version), call `resume` again without it and check the result's
+   `project_dir`, `name` and `saved_at` yourself). It
    returns the saved summary, decisions, open items and **which files changed
    since** — read only those. If there is no checkpoint it returns a cold-start digest
    of recent activity. If the result has a `memory_warning`, some references in the
@@ -73,7 +76,10 @@ it stopped" or similar, another agent (usually Claude Code) was cut off mid-task
 state behind. It was extracted automatically from that session, not summarized by an AI.
 
 1. Read `.claude-continuity/HANDOFF.md` in the project root if it exists. Or, with the MCP:
-   `router_checkpoint` with `{"action": "resume", "project_dir": "<project root>"}`. An
+   `router_checkpoint` with `{"action": "resume", "project_dir": "<project root>"}`.
+   `project_dir` requires claude-continuity-mcp v3.10 or later; if the server rejects the
+   argument (older version), call `resume` again without it and check the result's
+   `project_dir`, `name` and `saved_at` yourself. An
    autosave comes back with `last_assistant` (where Claude stopped), `stopped_by` and `git`.
    If you have neither, ask the user to paste the output of `claude-continuity-handoff` (v3.10
    or later), run on the machine where Claude Code ran.

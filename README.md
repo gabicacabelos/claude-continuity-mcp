@@ -356,7 +356,7 @@ The newest 10 autosave checkpoints are kept. Each one holds your last 5 requests
 
 **Three ways to read it**
 
-1. **In an MCP agent:** `/resume`, or `router_checkpoint action=resume project_dir=<repo>`. `project_dir` returns the newest checkpoint *of that project* (a folder inside the repo works), and an autosave also carries `project_dir`, `stopped_by`, `git` and `last_assistant`.
+1. **In an MCP agent:** `/resume`, or `router_checkpoint action=resume project_dir=<repo>`. `project_dir` returns the newest checkpoint *of that project* (a folder inside the repo works), and an autosave also carries `project_dir`, `stopped_by`, `git` and `last_assistant`. The `project_dir` argument of `resume` and the `claude-continuity-handoff` command both need v3.10 (next release): an older server rejects the argument, so call `resume` without it there.
 2. **As a file:** `.claude-continuity/HANDOFF.md` at the project root, written when an API error stops the session or with `--write`. Any agent that can read files can use it, with or without the MCP.
 3. **As text to paste:** `claude-continuity-handoff` prints up to 3000 characters for a chat. v0 and Perplexity can't see your disk, so for them paste is the only way. If the text doesn't fit it drops the list of files read first, then the oldest requests.
 
@@ -406,7 +406,7 @@ It writes `HANDOFF.md`, commits **only that file** and pushes the current branch
 
 - **Claude Code only.** Hooks are a Claude Code feature. Other agents can read what Claude Code saved, but they don't save anything themselves.
 - **It's on by default for existing plugin users.** Once the plugin updates to a version that includes it (`claude plugin update project-continuity@project-continuity`, after the v3.10 release), every turn end writes a checkpoint file under `~/.claude-continuity/checkpoints/`. That's a change in behavior: use the switches above to turn it off.
-- **Not verified yet:** whether your plan's usage limit fires `StopFailure`, and whether the plugin's hooks run in cloud sessions. They can't be tested from this repo's suite: the checklist is in [`docs/handoff-manual-check.md`](docs/handoff-manual-check.md). The per-turn autosave doesn't depend on `StopFailure`, so the checkpoint is at most one turn old either way. But `HANDOFF.md` is only written by `StopFailure` or by the command. The command needs no Claude, so if the file isn't there, run `claude-continuity-handoff --write` from a terminal.
+- **Not verified yet:** whether your plan's usage limit fires `StopFailure`, and whether the plugin's hooks run in cloud sessions. They can't be tested from this repo's suite: the checklist is in [`docs/handoff-manual-check.md`](docs/handoff-manual-check.md). The per-turn autosave doesn't depend on `StopFailure`, but it can lag: the checkpoint can be behind by up to the 60 s throttle, and the turn the limit cut off never reaches `Stop`, so its work is only captured if `StopFailure` fires. Also, `HANDOFF.md` is only written by `StopFailure` or by the command. The command needs no Claude, so if the file isn't there, run `claude-continuity-handoff --write` from a terminal.
 - **"Not visible to you" counts commits against the branch's upstream.** A branch that was never pushed has no upstream, so its commits are not counted; uncommitted files always are.
 - **It's an extract, not a summary.** The next agent gets what you asked, what Claude last said, the open todos and what changed on disk and in git, not why Claude was doing it.
 
