@@ -127,7 +127,7 @@ _stats = {
     "diff_reads": 0,
 }
 
-VERSION = "3.9.2"
+VERSION = "3.10.0"
 
 # Umbral: archivos por debajo se devuelven enteros (el overhead de RAG no rinde)
 FULL_RETURN_MAX_TOKENS = 1500
