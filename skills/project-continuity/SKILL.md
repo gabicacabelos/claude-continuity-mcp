@@ -58,7 +58,9 @@ On a project you may have worked on before, before re-exploring files:
    of recent activity. If the result has a `memory_warning`, some references in the
    checkpoint (file:line, function names) no longer match the code: look at
    `verification.issues` and re-check those points before relying on the summary or
-   decisions. Tell the user what drifted.
+   decisions. Tell the user what drifted. If the result has a `manual_checkpoint`, a checkpoint
+   saved on purpose is older than this autosave: resume that one too (`name=<its name>`)
+   for its decisions.
 2. `router_inbox` with `{"action": "check"}`: it lists the orders for you (your agent
    is detected: `code`, `desktop`, `cowork`, `design`, `antigravity`, `cursor`, `codex`,
    `gemini`, `copilot`…) plus those sent to `any`.

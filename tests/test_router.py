@@ -2563,9 +2563,10 @@ def test_resume_project_dir_without_a_match_falls_back_to_the_cold_start_digest(
     assert "NO un checkpoint intencional" in own_note, "la advertencia de honestidad del digest"
 
     out = _checkpoint(server_module, action="resume", project_dir=str(tmp_path / "nowhere"))
-    assert out["mode"] == "reconstructed_activity" and "no checkpoint saved for this project" in out["note"]
-    # se antepone el aviso, pero la advertencia propia del digest sigue completa
-    assert out["note"] == "no checkpoint saved for this project. " + own_note
+    assert out["mode"] == "reconstructed_activity" and "no checkpoint matched this project" in out["note"]
+    # se antepone el aviso (hay otro checkpoint, de otro proyecto), pero la advertencia propia del digest sigue completa
+    assert out["note"] == ("no checkpoint matched this project; 1 other checkpoint exists (other projects, or saved "
+                           "without absolute file paths): action=list shows them " + own_note)
     assert any(rf["path"] == str(f) for rf in out["recent_files"])
     assert "summary" not in out and "name" not in out, "no se cuela el checkpoint de otro proyecto"
 
@@ -2604,3 +2605,106 @@ def test_autosave_names_survive_safe_name_so_resume_by_name_finds_the_file(serve
 
 def test_resume_prompt_mentions_project_dir(server_module):
     assert "project_dir" in server_module.prompt_resume()
+
+
+# ─── server: un autoguardado más nuevo no esconde el checkpoint hecho a propósito ──
+
+def _manual(server_module, cps, name, *, mtime, files=(), summary="decisiones tomadas a propósito"):
+    """Guarda un checkpoint manual por la herramienta y le fija el mtime."""
+    saved = _checkpoint(server_module, action="save", name=name, summary=summary,
+                        decisions=["usar refresh tokens"], files=[str(f) for f in files])
+    assert saved["status"] == "saved"
+    os.utime(cps / f"{name}.json", (mtime, mtime))
+
+
+def test_resume_offers_the_manual_checkpoint_when_an_autosave_is_newest(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    (a / "auth.py").write_text("def refresh():\n    return 1\n", encoding="utf-8")
+    _manual(server_module, cps, "manual-a", mtime=now - 100, files=[a / "auth.py"], summary="x" * 500)
+    _autosave(cps, a, "a", mtime=now - 10)  # el Stop lo escribe DESPUÉS del checkpoint manual
+    for kw in ({"project_dir": str(a)}, {}):  # con filtro y sin él
+        out = _checkpoint(server_module, action="resume", **kw)
+        assert out["name"] == "autosave-a", kw  # el ganador no cambia
+        assert out["manual_checkpoint"]["name"] == "manual-a"
+        assert out["manual_checkpoint"]["saved_at"]
+        assert out["manual_checkpoint"]["summary"] == "x" * 200
+        assert "A checkpoint saved on purpose also exists: router_checkpoint action=resume name=manual-a " \
+               "has its decisions." in out["hint"]
+        assert out["hint"].startswith("ningún archivo relevante cambió")  # lo de antes queda intacto
+
+
+def test_resume_has_no_manual_checkpoint_key_without_one(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    _autosave(cps, a, "a-old", mtime=now - 100)
+    _autosave(cps, a, "a", mtime=now - 10)
+    # un checkpoint de compactación tampoco es uno hecho a propósito
+    (cps / "pre.json").write_text(json.dumps({
+        "name": "pre", "saved_at": "2026-01-01 10:00", "summary": "s", "decisions": [], "open_items": [],
+        "files": [], "auto": "pre_compact", "project_dir": str(a)}), encoding="utf-8")
+    os.utime(cps / "pre.json", (now - 50, now - 50))
+    for kw in ({"project_dir": str(a)}, {}):
+        out = _checkpoint(server_module, action="resume", **kw)
+        assert out["name"] == "autosave-a" and "manual_checkpoint" not in out, kw
+        assert "saved on purpose" not in out["hint"]
+
+
+def test_resume_does_not_offer_the_manual_checkpoint_of_another_project(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    (b / "other.py").write_text("x = 1\n", encoding="utf-8")
+    _manual(server_module, cps, "manual-b", mtime=now - 100, files=[b / "other.py"])
+    _autosave(cps, a, "a", mtime=now - 10)
+    out = _checkpoint(server_module, action="resume", project_dir=str(a))
+    assert out["name"] == "autosave-a" and "manual_checkpoint" not in out
+    # sin filtro no hay proyecto que respetar: se ofrece el primero hecho a propósito
+    assert _checkpoint(server_module, action="resume")["manual_checkpoint"]["name"] == "manual-b"
+
+
+def test_resume_leaves_a_manual_winner_exactly_as_before(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    (a / "auth.py").write_text("def refresh():\n    return 1\n", encoding="utf-8")
+    _autosave(cps, a, "a", mtime=now - 100)
+    _manual(server_module, cps, "manual-a", mtime=now - 10, files=[a / "auth.py"])
+    for kw in ({"project_dir": str(a)}, {}):
+        out = _checkpoint(server_module, action="resume", **kw)
+        assert out["name"] == "manual-a" and "manual_checkpoint" not in out, kw
+        assert "saved on purpose" not in out["hint"]
+    # con `name` explícito tampoco se ofrece nada
+    assert "manual_checkpoint" not in _checkpoint(server_module, action="resume", name="autosave-a")
+
+
+def test_resume_project_filter_empty_but_other_checkpoints_exist_says_how_many(
+        server_module, two_projects, tmp_path, monkeypatch):
+    a, b, cps = two_projects
+    led = FileLedger(str(tmp_path / "nm.db"))
+    ib = Inbox(str(tmp_path / "nm_inbox.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    monkeypatch.setattr(server_module, "inbox", ib)
+    own_note = server_module._cold_start_digest()["note"]
+    now = time.time()
+    _autosave(cps, b, "b", mtime=now - 10)
+    # un checkpoint manual con ruta relativa y otro sin archivos: nunca calzan con un proyecto
+    saved = _checkpoint(server_module, action="save", name="manual-rel", summary="s", files=["rel/auth.py"])
+    assert saved["status"] == "saved"
+    _checkpoint(server_module, action="save", name="manual-nofiles", summary="s")
+
+    out = _checkpoint(server_module, action="resume", project_dir=str(a))
+    assert out["mode"] == "reconstructed_activity"
+    note = out["note"]
+    assert note.startswith("no checkpoint matched this project; 3 other checkpoints exist ")
+    assert "action=list" in note and "without absolute file paths" in note
+    assert note.endswith(" " + own_note) and "NO un checkpoint intencional" in note  # la advertencia sigue
+
+    for p in (cps / "manual-rel.json", cps / "manual-nofiles.json"):
+        p.unlink()
+    note = _checkpoint(server_module, action="resume", project_dir=str(a))["note"]
+    assert note.startswith("no checkpoint matched this project; 1 other checkpoint exists ")
+
+    for p in cps.glob("*.json"):  # ni uno solo: como antes
+        p.unlink()
+    note = _checkpoint(server_module, action="resume", project_dir=str(a))["note"]
+    assert note == "no checkpoint saved for this project. " + own_note
+    led.close(); ib.close()

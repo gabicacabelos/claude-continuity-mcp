@@ -791,6 +791,29 @@ def _belongs_to_project(path: Path, project: Path) -> bool:
         return False
 
 
+def _newest_manual_checkpoint(candidates: list[Path], project: Path | None, limit: int = 50) -> dict | None:
+    """
+    Cuando el más nuevo es un autoguardado: el primero de `candidates[1:]` (orden por mtime, a lo sumo
+    `limit`) que sea un checkpoint hecho a propósito, o sea, sin la clave `auto`. Con `project` solo
+    cuentan los de ese proyecto. Devuelve {"name", "saved_at", "summary"} o None; lo ilegible se salta.
+    """
+    for path in candidates[1:limit + 1]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or "auto" in data:
+            continue
+        if project is not None and not _handoff.belongs_to_project(data, project):
+            continue
+        name = data.get("name")
+        summary = data.get("summary")
+        return {"name": name if isinstance(name, str) and name else path.stem,
+                "saved_at": data.get("saved_at"),
+                "summary": summary[:200] if isinstance(summary, str) else ""}
+    return None
+
+
 def _cold_start_digest() -> dict:
     """
     Arranque en frío: no hay checkpoints, pero el ledger y el inbox SÍ tienen
@@ -931,13 +954,15 @@ async def router_checkpoint(params: CheckpointInput) -> str:
         return _j(out)
 
     # resume
+    candidates: list[Path] = []
+    project = None
     if params.name:
         path = _checkpoints_dir / f"{_safe_name(params.name)}.json"
         if not path.exists():
             return _j({"status": "error", "reason": f"checkpoint '{params.name}' no existe — usar action=list"})
     else:
         candidates = sorted(_checkpoints_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
-        project = None
+        total = len(candidates)
         if params.project_dir:
             # Solo los de este proyecto: una carpeta dentro del repo vale, se normaliza a la raíz de git.
             project = gitstate.project_root(params.project_dir) or Path(params.project_dir)
@@ -948,7 +973,13 @@ async def router_checkpoint(params: CheckpointInput) -> str:
             if project is not None:
                 # Se antepone el aviso; la advertencia propia del digest (actividad reconstruida,
                 # no un checkpoint intencional) se conserva entera.
-                prefix = "no checkpoint saved for this project."
+                if total:
+                    others = (f"{total} other checkpoint exists" if total == 1
+                              else f"{total} other checkpoints exist")
+                    prefix = (f"no checkpoint matched this project; {others} (other projects, or saved "
+                              "without absolute file paths): action=list shows them")
+                else:
+                    prefix = "no checkpoint saved for this project."
                 digest["note"] = f"{prefix} {digest['note']}" if digest.get("note") else prefix
             return _j(digest)
         path = candidates[0]
@@ -977,6 +1008,14 @@ async def router_checkpoint(params: CheckpointInput) -> str:
     for key in ("project_dir", "stopped_by", "git", "last_assistant"):
         if data.get(key):
             out[key] = data[key]
+    # El Stop escribe el autoguardado DESPUÉS de un checkpoint manual hecho en el mismo turno, y por
+    # mtime gana el autoguardado (pedidos, sin decisiones): se avisa del que se guardó a propósito.
+    if candidates and data.get("auto") == "autosave":
+        manual = _newest_manual_checkpoint(candidates, project)
+        if manual:
+            out["manual_checkpoint"] = manual
+            out["hint"] += (" A checkpoint saved on purpose also exists: router_checkpoint "
+                            f"action=resume name={manual['name']} has its decisions.")
     # La memoria se contrasta con el código ANTES de que el modelo confíe en ella.
     try:
         if "anchors" in data:
