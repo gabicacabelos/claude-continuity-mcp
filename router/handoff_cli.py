@@ -6,7 +6,8 @@ credenciales salen enmascaradas), con `stopped_by="manual"`.
 
 Sin --write no escribe nada. --commit commitea SOLO HANDOFF.md (`git commit --only`) y --push sube la rama.
 La salida pedida va a stdout y los avisos a stderr. Códigos: 0 = ok · 1 = falló el commit o el push (la
-salida se imprime igual) · 2 = uso incorrecto o sin transcripción local (la sesión pudo correr en la nube).
+salida se imprime igual) · 2 = uso incorrecto o sin transcripción local (la sesión pudo correr en la nube) ·
+3 = no se pudo guardar el checkpoint o el archivo (la salida se imprime igual y no se commitea nada).
 """
 import argparse
 import json
@@ -36,7 +37,8 @@ read from the local transcript and git (no LLM summaries), and secrets pasted in
 The output goes to stdout; notices go to stderr. Nothing is written without --write. HANDOFF.md holds your
 recent requests (secrets are masked, other private text is not): read it before pushing it anywhere.
 Exit codes: 0 ok; 1 the commit or push failed (the output is still printed); 2 bad usage or no local
-transcript (the session may have run in the cloud: then the handoff is the HANDOFF.md pushed to the branch).
+transcript (the session may have run in the cloud: then the handoff is the HANDOFF.md pushed to the branch);
+3 the checkpoint or HANDOFF.md could not be saved (the output is still printed and nothing is committed).
 """
 
 COMMIT_MESSAGE = "chore: handoff from Claude Code"
@@ -165,16 +167,25 @@ def main(argv=None) -> int:
             return 2
     session_id = a.session or transcript.stem
 
+    h = file = None
+    save_failed = False
     if a.write:
         data_dir = _path(a.home) if a.home else resolve_data_dir(Path(__file__).resolve().parent.parent)
-        out = handoff.capture(transcript, project, session_id, "manual", data_dir, write_file=True)
-        h, file = out["handoff"], out["file"]
-        print(f"Saved checkpoint {out['checkpoint']} and wrote {file}", file=sys.stderr)
-    else:
-        h, file = handoff.collect_handoff(transcript, project, session_id, "manual"), None
+        try:
+            out = handoff.capture(transcript, project, session_id, "manual", data_dir, write_file=True)
+        except OSError as e:  # --home que no es una carpeta, proyecto de solo lectura, disco lleno…
+            print(f"Could not save the handoff: {e}", file=sys.stderr)
+            save_failed = True
+        else:
+            h, file = out["handoff"], out["file"]
+            print(f"Saved checkpoint {out['checkpoint']} and wrote {file}", file=sys.stderr)
+    if h is None:  # sin --write, o no se pudo guardar: el texto pedido sale igual
+        h = handoff.collect_handoff(transcript, project, session_id, "manual")
     sys.stdout.write(_render(h, a.format, a.max_chars))
     sys.stdout.flush()
 
+    if save_failed:
+        return 3  # sin archivo guardado no hay nada que commitear
     if not a.commit:
         return 0
     print(COMMIT_WARNING, file=sys.stderr)

@@ -1443,6 +1443,8 @@ def _cli_env(tmp_path, monkeypatch):
         monkeypatch.setenv(f"GIT_{name}_EMAIL", "test@example.com")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    # git no sube más allá de tmp_path: ningún add/commit/push de estas pruebas llega a un repo que contenga la carpeta temporal
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     return cfg
 
 
@@ -1692,6 +1694,37 @@ def test_cli_push_failure_keeps_the_commit_and_exits_1(tmp_path, monkeypatch, ca
     assert out.startswith("You are taking over")
     assert "Committed" in err and "Pushed" not in err and "origin" in err
     assert _git(repo, "log", "-1", "--format=%s") == "chore: handoff from Claude Code"
+
+
+@pytest.mark.parametrize("flag", ["--write", "--commit", "--push"])
+def test_cli_write_failure_still_prints_the_output_and_exits_3(tmp_path, monkeypatch, capsys, flag):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    home.write_text("not a folder", encoding="utf-8")  # --home apunta a un archivo: no se puede guardar nada
+
+    def never_commit(*args, **kwargs):
+        raise AssertionError("what could not be saved must not be committed")
+    monkeypatch.setattr(H_CLI, "commit_handoff", never_commit)
+
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), flag]) == 3
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over") and "fix the login" in out  # el texto pedido sale igual
+    assert "Could not save the handoff" in err and "Saved checkpoint" not in err
+    assert home.read_text(encoding="utf-8") == "not a folder"
+    assert not (proj / ".claude-continuity").exists()
+
+
+@needs_git
+def test_cli_git_never_reaches_a_repository_above_tmp_path(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    outer = _init_repo(tmp_path)  # un repo "padre" del proyecto, como un dotfiles en $HOME o un --basetemp dentro de un checkout
+    proj, home = _project(tmp_path), tmp_path / "home"
+    _cli_session(cfg, proj, "s1", ["fix the login"], 1_000_000)
+    before = _git(outer, "rev-parse", "HEAD")
+
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--commit"]) == 1  # proj no es un repo
+    assert _git(outer, "rev-parse", "HEAD") == before, "nothing may be committed in the parent repository"
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+    assert not (tmp_path / ".claude-continuity").exists(), "the handoff root is the project, not the parent repo"
 
 
 def test_cli_help_describes_the_command(capsys):
