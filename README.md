@@ -2,6 +2,8 @@
 
 [![tests](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml)
 
+▶ **[Watch the 22-second presentation](docs/media/presentation.mp4)** (video, in Spanish)
+
 **Your agents stop waiting for you to carry messages.** Claude Code hands a task to Antigravity, goes idle, and wakes up
 by itself the moment the reply lands. And they all share one project memory that survives `/compact` and new sessions.
 
