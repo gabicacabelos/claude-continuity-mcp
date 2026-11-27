@@ -946,7 +946,10 @@ async def router_checkpoint(params: CheckpointInput) -> str:
             # Arranque en frío: en vez de "empty", digest determinista de actividad
             digest = _cold_start_digest()
             if project is not None:
-                digest["note"] = "no checkpoint saved for this project"
+                # Se antepone el aviso; la advertencia propia del digest (actividad reconstruida,
+                # no un checkpoint intencional) se conserva entera.
+                prefix = "no checkpoint saved for this project."
+                digest["note"] = f"{prefix} {digest['note']}" if digest.get("note") else prefix
             return _j(digest)
         path = candidates[0]
 

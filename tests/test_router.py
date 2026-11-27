@@ -2559,15 +2559,23 @@ def test_resume_project_dir_without_a_match_falls_back_to_the_cold_start_digest(
     f.write_text("codigo", encoding="utf-8")
     led.record(str(f), "codigo", [], tokens=2)
     _autosave(cps, a, "a", mtime=time.time())  # hay un checkpoint, pero de otro proyecto
+    own_note = server_module._cold_start_digest()["note"]
+    assert "NO un checkpoint intencional" in own_note, "la advertencia de honestidad del digest"
 
     out = _checkpoint(server_module, action="resume", project_dir=str(tmp_path / "nowhere"))
     assert out["mode"] == "reconstructed_activity" and "no checkpoint saved for this project" in out["note"]
+    # se antepone el aviso, pero la advertencia propia del digest sigue completa
+    assert out["note"] == "no checkpoint saved for this project. " + own_note
     assert any(rf["path"] == str(f) for rf in out["recent_files"])
     assert "summary" not in out and "name" not in out, "no se cuela el checkpoint de otro proyecto"
 
     monkeypatch.setattr(server_module, "_checkpoints_dir", tmp_path / "no_checkpoints")  # ni uno solo
     out = _checkpoint(server_module, action="resume", project_dir=str(a))
     assert out["mode"] == "reconstructed_activity" and "no checkpoint saved for this project" in out["note"]
+    assert out["note"] == "no checkpoint saved for this project. " + own_note
+    # sin project_dir el arranque en frío queda como estaba: la nota es la del digest, sin prefijo
+    out = _checkpoint(server_module, action="resume")
+    assert out["mode"] == "reconstructed_activity" and out["note"] == own_note
     led.close(); ib.close()
 
 
