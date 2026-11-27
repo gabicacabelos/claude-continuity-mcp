@@ -63,6 +63,8 @@ from router.paths import resolve_data_dir
 from router import card
 from router import clients
 from router import history
+from router import gitstate
+from router import handoff as _handoff
 from router.safety import PathNotAllowed, check_path, is_allowed, redact_secrets
 
 # ─────────────────────────────────────────────
@@ -469,6 +471,11 @@ class CheckpointInput(BaseModel):
         default=None,
         description="[save] Rutas de archivos relevantes a la tarea — al hacer resume se reporta cuáles cambiaron",
     )
+    project_dir: Optional[str] = Field(
+        default=None,
+        description="[resume] Only consider checkpoints saved for this project folder (a path inside the repo is fine). "
+                    "Ignored when `name` is given.",
+    )
 
 
 class InboxInput(BaseModel):
@@ -776,6 +783,14 @@ def _safe_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)[:60] or "latest"
 
 
+def _belongs_to_project(path: Path, project: Path) -> bool:
+    """¿El checkpoint en `path` es de `project`? Uno ilegible (o que no es un objeto JSON) no lo es."""
+    try:
+        return _handoff.belongs_to_project(json.loads(path.read_text(encoding="utf-8")), project)
+    except (OSError, ValueError):
+        return False
+
+
 def _cold_start_digest() -> dict:
     """
     Arranque en frío: no hay checkpoints, pero el ledger y el inbox SÍ tienen
@@ -837,6 +852,10 @@ async def router_checkpoint(params: CheckpointInput) -> str:
           JSON legible (checkpoints/{name}.json) — el usuario puede editarlo.
     resume: una sesión nueva restaura todo en ~300 tokens, e indica qué archivos
             cambiaron en disco desde el checkpoint (via hash) — sin re-leerlos.
+            Pasá `project_dir` con la carpeta raíz del proyecto en el que trabajás para
+            retomar el último checkpoint DE ESE proyecto (sin él, el más reciente de todos);
+            con `name` se ignora. Los autoguardados de un handoff traen además `project_dir`,
+            `stopped_by`, `git` y `last_assistant`.
     list: checkpoints disponibles con fecha y resumen.
     """
     _begin_call()
@@ -918,9 +937,17 @@ async def router_checkpoint(params: CheckpointInput) -> str:
             return _j({"status": "error", "reason": f"checkpoint '{params.name}' no existe — usar action=list"})
     else:
         candidates = sorted(_checkpoints_dir.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+        project = None
+        if params.project_dir:
+            # Solo los de este proyecto: una carpeta dentro del repo vale, se normaliza a la raíz de git.
+            project = gitstate.project_root(params.project_dir) or Path(params.project_dir)
+            candidates = [p for p in candidates if _belongs_to_project(p, project)]
         if not candidates:
             # Arranque en frío: en vez de "empty", digest determinista de actividad
-            return _j(_cold_start_digest())
+            digest = _cold_start_digest()
+            if project is not None:
+                digest["note"] = "no checkpoint saved for this project"
+            return _j(digest)
         path = candidates[0]
 
     try:
@@ -943,6 +970,10 @@ async def router_checkpoint(params: CheckpointInput) -> str:
             if changed else "ningún archivo relevante cambió desde el checkpoint"
         ),
     }
+    # Lo propio de un autoguardado (handoff): solo se agrega lo que el checkpoint trae con valor.
+    for key in ("project_dir", "stopped_by", "git", "last_assistant"):
+        if data.get(key):
+            out[key] = data[key]
     # La memoria se contrasta con el código ANTES de que el modelo confíe en ella.
     try:
         if "anchors" in data:
@@ -1467,7 +1498,8 @@ async def router_project_search(params: ProjectSearchInput) -> str:
 def prompt_resume() -> str:
     return (
         "Retomá el trabajo previo de este proyecto:\n"
-        "1. Llamá router_checkpoint con action='resume' (sin name, para el más reciente). "
+        "1. Llamá router_checkpoint con action='resume' y project_dir=<la carpeta raíz del proyecto en el que "
+        "estás trabajando> (sin name: así trae el checkpoint más reciente DE ESE proyecto). "
         "Si la respuesta trae mode='reconstructed_activity', tratála como rastro de archivos y órdenes — "
         "NO como decisiones de arquitectura.\n"
         "2. Llamá router_inbox con action='check' y to=<este cliente> para ver órdenes pendientes.\n"

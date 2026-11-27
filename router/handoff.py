@@ -46,6 +46,36 @@ def autosave_name(session_id: str) -> str:
     return (AUTOSAVE_PREFIX + safe)[:60]
 
 
+def _norm_path(path) -> str:
+    """Ruta comparable: sin `..`, sin barra final y sin diferencias de mayúsculas donde el sistema no las distingue."""
+    return os.path.normcase(os.path.normpath(str(path)))
+
+
+def belongs_to_project(checkpoint: dict, project_dir: str | Path) -> bool:
+    """
+    ¿Este checkpoint es de `project_dir`? Si trae `project_dir` (los autoguardados), decide la igualdad
+    de las rutas normalizadas y no se mira nada más. Si no (un checkpoint manual), alcanza con que algún
+    archivo de `files` quede dentro de la carpeta. Lo mal formado se ignora; nunca lanza.
+    """
+    if not isinstance(checkpoint, dict):
+        return False
+    project = _norm_path(project_dir)
+    saved = checkpoint.get("project_dir")
+    if isinstance(saved, str) and saved:
+        return _norm_path(saved) == project
+    files = checkpoint.get("files")
+    for entry in files if isinstance(files, list) else []:
+        path = entry.get("path") if isinstance(entry, dict) else None
+        if not isinstance(path, str) or not path:
+            continue
+        try:
+            if os.path.commonpath([_norm_path(path), project]) == project:
+                return True
+        except ValueError:  # otra unidad (Windows) o ruta relativa contra absoluta: no está adentro
+            continue
+    return False
+
+
 def _clean(text) -> str:
     """Texto libre de la sesión con las credenciales enmascaradas."""
     return redact_secrets(text if isinstance(text, str) else str(text))[0]

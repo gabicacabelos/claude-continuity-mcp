@@ -1832,3 +1832,52 @@ def test_commit_handoff_runs_git_without_a_shell_in_the_repo(tmp_path, monkeypat
 def test_console_script_is_declared():
     toml = (Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8")
     assert 'claude-continuity-handoff = "router.handoff_cli:main"' in toml
+
+
+# ─── Tarea 8: a qué proyecto pertenece un checkpoint ───
+
+def test_belongs_to_project_rules(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    assert H.belongs_to_project({"project_dir": str(a)}, a) is True
+    assert H.belongs_to_project({"project_dir": str(b), "files": [{"path": str(a / "x.py")}]}, a) is False
+    assert H.belongs_to_project({"files": [{"path": str(a / "x.py")}]}, a) is True      # checkpoint manual, sin project_dir
+    assert H.belongs_to_project({"files": [{"path": str(b / "x.py")}]}, a) is False
+
+
+def test_belongs_to_project_project_dir_wins_over_files_and_is_compared_normalised(tmp_path):
+    a = tmp_path / "a"
+    # una barra final o un `..` no cambian de qué carpeta se habla
+    assert H.belongs_to_project({"project_dir": str(a) + os.sep}, a) is True
+    assert H.belongs_to_project({"project_dir": str(a / ".." / "a")}, a) is True
+    assert H.belongs_to_project({"project_dir": str(a)}, str(a) + os.sep) is True
+    # igualdad exacta: una subcarpeta o una hermana con el mismo prefijo no es el mismo proyecto
+    assert H.belongs_to_project({"project_dir": str(a / "src")}, a) is False
+    assert H.belongs_to_project({"project_dir": str(tmp_path / "a2")}, a) is False
+    # con project_dir no se mira nada más: ni siquiera los archivos que sí están dentro
+    assert H.belongs_to_project({"project_dir": str(tmp_path / "other"), "files": [{"path": str(a / "x.py")}]}, a) is False
+
+
+def test_belongs_to_project_matches_files_inside_the_folder_only(tmp_path):
+    a = tmp_path / "a"
+    assert H.belongs_to_project({"files": [{"path": str(a / "src" / "deep" / "x.py")}]}, a) is True
+    assert H.belongs_to_project({"files": [{"path": str(tmp_path / "other.py")}, {"path": str(a / "x.py")}]}, a) is True
+    assert H.belongs_to_project({"files": [{"path": str(tmp_path / "a2" / "x.py")}]}, a) is False   # prefijo, no carpeta
+    assert H.belongs_to_project({"files": [{"path": str(tmp_path / "x.py")}]}, a) is False          # el padre no cuenta
+    assert H.belongs_to_project({"project_dir": "", "files": [{"path": str(a / "x.py")}]}, a) is True  # vacío = sin project_dir
+
+
+def test_belongs_to_project_never_raises_on_malformed_checkpoints(tmp_path, monkeypatch):
+    a = tmp_path / "a"
+    good = {"path": str(a / "x.py")}
+    for bad in ({}, {"files": None}, {"files": []}, {"files": "x.py"}, {"files": 3}, {"files": [None, 7, "x.py", [], {}]},
+                {"files": [{"path": None}, {"path": 5}, {"path": ""}]}, {"project_dir": 5}, {"project_dir": None},
+                {"files": [{"path": "relative/x.py"}]}):
+        assert H.belongs_to_project(bad, a) is False, bad
+    assert H.belongs_to_project({"files": [None, {"path": 5}, good]}, a) is True   # lo roto se ignora, no corta
+    assert H.belongs_to_project(None, a) is False and H.belongs_to_project([], a) is False
+
+    # rutas de otra unidad (Windows): commonpath lanza ValueError y eso es "no pertenece"
+    def other_drive(paths):
+        raise ValueError("Paths don't have the same drive")
+    monkeypatch.setattr(H.os.path, "commonpath", other_drive)
+    assert H.belongs_to_project({"files": [good]}, a) is False

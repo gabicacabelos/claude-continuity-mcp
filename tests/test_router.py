@@ -2442,3 +2442,157 @@ def test_plugin_ships_compaction_hooks():
     assert "pre_compact.py" in cfg["PreCompact"][0]["hooks"][0]["command"]
     start = cfg["SessionStart"][0]
     assert start["matcher"] == "compact" and "session_start.py" in start["hooks"][0]["command"]
+
+
+# ─── server: resume filtra por proyecto y devuelve el estado de git del autoguardado ──
+
+import shutil
+import subprocess
+from router import handoff as HO
+
+
+def _autosave(cps, proj, sid, *, mtime, files=(), stopped_by="rate_limit", branch="main"):
+    """Guarda un autoguardado real (save_autosave) de `proj` en `cps` y le fija el mtime."""
+    state = {"prompts": [f"work in {sid}"], "edited": [str(f) for f in files], "read": [],
+             "todos": [f"todo {sid}"], "last_assistant": f"Next: finish {sid}"}
+    git = {"available": True, "branch": branch, "head": "abc1234", "subject": "add refresh", "ahead": 1,
+           "dirty": [], "dirty_total": 0}
+    name = HO.save_autosave(HO.build_handoff(state, git, proj, session_id=sid, stopped_by=stopped_by), cps)
+    os.utime(cps / f"{name}.json", (mtime, mtime))
+    return name
+
+
+@pytest.fixture
+def two_projects(server_module, tmp_path, monkeypatch):
+    """Dos carpetas de proyecto (fuera de git) y una carpeta de checkpoints propia del test."""
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    cps = tmp_path / "cps"
+    monkeypatch.setattr(server_module, "_checkpoints_dir", cps)
+    a, b = tmp_path / "proj-a", tmp_path / "proj-b"
+    a.mkdir(); b.mkdir()
+    return a, b, cps
+
+
+def test_resume_with_project_dir_picks_that_projects_newest_checkpoint(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    _autosave(cps, a, "a-old", mtime=now - 300)
+    _autosave(cps, a, "a", mtime=now - 200)
+    _autosave(cps, b, "b", mtime=now - 100)  # el más nuevo de todos, pero de otro proyecto
+
+    assert _checkpoint(server_module, action="resume", project_dir=str(a))["name"] == "autosave-a"
+    assert _checkpoint(server_module, action="resume", project_dir=str(b))["name"] == "autosave-b"
+    assert _checkpoint(server_module, action="resume")["name"] == "autosave-b"  # sin filtro: igual que hoy
+    # con `name` el filtro no se aplica: el checkpoint pedido se devuelve aunque sea de otro proyecto
+    assert _checkpoint(server_module, action="resume", name="autosave-b", project_dir=str(a))["name"] == "autosave-b"
+    assert _checkpoint(server_module, action="resume", name="autosave-b", project_dir=str(a / "nope"))["name"] == "autosave-b"
+
+
+def test_resume_without_project_dir_still_returns_the_newest_checkpoint_of_any_kind(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    _autosave(cps, a, "a", mtime=now - 200)
+    manual = _checkpoint(server_module, action="save", name="manual-note", summary="nota suelta, sin archivos")
+    assert manual["status"] == "saved"  # el más nuevo (mtime = ahora) y sin project_dir ni archivos
+    for kw in ({}, {"project_dir": ""}, {"project_dir": "   "}):  # vacío o en blanco = sin filtro
+        r = _checkpoint(server_module, action="resume", **kw)
+        assert r["name"] == "manual-note", kw
+        assert not {"project_dir", "stopped_by", "git", "last_assistant"} & set(r), "un checkpoint manual no los trae"
+    # con filtro, ese checkpoint sin proyecto ni archivos no cuenta como de `a`
+    assert _checkpoint(server_module, action="resume", project_dir=str(a))["name"] == "autosave-a"
+
+
+def test_resume_project_dir_matches_manual_checkpoints_by_their_files(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    (a / "auth.py").write_text("def refresh():\n    return 1\n", encoding="utf-8")
+    saved = _checkpoint(server_module, action="save", name="manual-a", summary="trabajo manual en a",
+                        files=[str(a / "auth.py")])
+    assert saved["status"] == "saved"
+    os.utime(cps / "manual-a.json", (now - 50, now - 50))
+    _autosave(cps, b, "b", mtime=now - 10)
+    assert _checkpoint(server_module, action="resume", project_dir=str(a))["name"] == "manual-a"
+    assert _checkpoint(server_module, action="resume", project_dir=str(b))["name"] == "autosave-b"
+
+
+def test_resume_with_project_dir_skips_unreadable_checkpoints(server_module, two_projects):
+    a, b, cps = two_projects
+    now = time.time()
+    _autosave(cps, a, "a", mtime=now - 200)
+    for name, text in (("broken", "{no es json"), ("not-a-dict", "[1, 2]")):
+        (cps / f"{name}.json").write_text(text, encoding="utf-8")
+        os.utime(cps / f"{name}.json", (now, now))  # los más nuevos de todos
+    assert _checkpoint(server_module, action="resume", project_dir=str(a))["name"] == "autosave-a"
+
+
+def test_resume_returns_git_stopped_by_and_last_assistant_when_present(server_module, two_projects):
+    a, b, cps = two_projects
+    _autosave(cps, a, "a", mtime=time.time(), stopped_by="rate_limit", branch="main")
+    out = _checkpoint(server_module, action="resume", name="autosave-a")
+    assert out["stopped_by"] == "rate_limit" and out["git"]["branch"] == "main" and out["last_assistant"]
+    assert out["project_dir"] == str(a)
+    assert out["git"]["head"] == "abc1234" and out["last_assistant"] == "Next: finish a"
+    # lo que ya devolvía no se renombra ni se reordena
+    assert list(out)[:8] == ["status", "name", "saved_at", "summary", "decisions", "open_items", "files", "hint"]
+    assert out["status"] == "resumed" and out["open_items"] == ["todo a"]
+
+
+def test_resume_leaves_out_empty_git_stopped_by_and_last_assistant(server_module, two_projects):
+    a, b, cps = two_projects
+    cps.mkdir()
+    (cps / "autosave-x.json").write_text(json.dumps({
+        "name": "autosave-x", "saved_at": "2026-01-01 10:00", "summary": "s", "decisions": [], "open_items": [],
+        "files": [], "project_dir": str(a), "stopped_by": "", "last_assistant": "", "git": {}}), encoding="utf-8")
+    out = _checkpoint(server_module, action="resume", name="autosave-x")
+    assert out["project_dir"] == str(a)  # el único que sí trae valor
+    assert not {"stopped_by", "git", "last_assistant"} & set(out)
+
+
+def test_resume_project_dir_without_a_match_falls_back_to_the_cold_start_digest(
+        server_module, two_projects, tmp_path, monkeypatch):
+    a, b, cps = two_projects
+    led = FileLedger(str(tmp_path / "pd.db"))
+    ib = Inbox(str(tmp_path / "pd_inbox.db"))
+    monkeypatch.setattr(server_module, "ledger", led)
+    monkeypatch.setattr(server_module, "inbox", ib)
+    f = tmp_path / "trabajado.py"
+    f.write_text("codigo", encoding="utf-8")
+    led.record(str(f), "codigo", [], tokens=2)
+    _autosave(cps, a, "a", mtime=time.time())  # hay un checkpoint, pero de otro proyecto
+
+    out = _checkpoint(server_module, action="resume", project_dir=str(tmp_path / "nowhere"))
+    assert out["mode"] == "reconstructed_activity" and "no checkpoint saved for this project" in out["note"]
+    assert any(rf["path"] == str(f) for rf in out["recent_files"])
+    assert "summary" not in out and "name" not in out, "no se cuela el checkpoint de otro proyecto"
+
+    monkeypatch.setattr(server_module, "_checkpoints_dir", tmp_path / "no_checkpoints")  # ni uno solo
+    out = _checkpoint(server_module, action="resume", project_dir=str(a))
+    assert out["mode"] == "reconstructed_activity" and "no checkpoint saved for this project" in out["note"]
+    led.close(); ib.close()
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+def test_resume_project_dir_inside_a_repo_resolves_to_the_repo_root(server_module, two_projects, tmp_path):
+    a, b, cps = two_projects
+    repo = tmp_path / "repo"
+    (repo / "src" / "api").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True, capture_output=True)
+    root = repo.resolve()  # git informa la raíz con los enlaces simbólicos resueltos
+    now = time.time()
+    _autosave(cps, root, "r", mtime=now - 200)
+    _autosave(cps, b, "b", mtime=now - 100)
+    for inside in (root, root / "src" / "api"):
+        assert _checkpoint(server_module, action="resume", project_dir=str(inside))["name"] == "autosave-r", inside
+
+
+@pytest.mark.parametrize("sid", ["sid 1/x", "ñandú-1", "a.b", "x" * 200])
+def test_autosave_names_survive_safe_name_so_resume_by_name_finds_the_file(server_module, two_projects, sid):
+    a, b, cps = two_projects
+    name = HO.autosave_name(sid)
+    assert server_module._safe_name(name) == name
+    assert _autosave(cps, a, sid, mtime=time.time()) == name
+    assert _checkpoint(server_module, action="resume", name=name)["name"] == name
+
+
+def test_resume_prompt_mentions_project_dir(server_module):
+    assert "project_dir" in server_module.prompt_resume()
