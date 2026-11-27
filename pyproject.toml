@@ -44,5 +44,9 @@ path = "server.py"
 [tool.uv]
 cache-keys = [{ file = "pyproject.toml" }, { file = "server.py" }, { file = "router/*.py" }]
 
+# El video y el GIF de la presentación son para el README de GitHub: no van en el paquete fuente.
+[tool.hatch.build.targets.sdist]
+exclude = ["/docs/media"]
+
 [tool.hatch.build.targets.wheel]
 only-include = ["server.py", "router"]
