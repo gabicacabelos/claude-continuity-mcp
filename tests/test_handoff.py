@@ -514,6 +514,29 @@ def _h(state=None, git=None, rules=None, **kw):
                            "/w/app", rules=rules, **kw)
 
 
+def test_build_handoff_cleans_stopped_by_everywhere():
+    raw = "overloaded\n\n## Injected section\n" + "y" * 500
+    cleaned = "overloaded ## Injected section " + "y" * 9
+    assert len(cleaned) == 40
+    h = _h(stopped_by=raw)
+    assert h["stopped_by"] == cleaned
+    for text in (H.render_markdown(h), H.render_paste(h)):
+        assert cleaned in text and "y" * 10 not in text
+        assert not [ln for ln in text.splitlines() if ln.lstrip().startswith("## Injected")]
+    assert f"Stopped: {h['saved_at']} ({cleaned})" in H.render_markdown(h)
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("rate_limit", "rate_limit"), ("turn_end", "turn_end"), ("manual", "manual"),
+    ("  server   error \t\n 529 ", "server error 529"), ("", "api_error"), (" \n\t ", "api_error"),
+    (429, "429"), (AWS_KEY, "AKIA█REDACTED█"),
+])
+def test_build_handoff_stopped_by_unusual_values(value, expected):
+    h = _h(stopped_by=value)
+    assert h["stopped_by"] == expected
+    assert AWS_KEY not in H.render_markdown(h) + H.render_paste(h) + json.dumps(h)
+
+
 def test_build_handoff_masks_secrets_everywhere():
     state = _h_state(prompts=[f"use {AWS_KEY} for the upload"], last_assistant=f"I set the token {GH_TOKEN} in .env",
                      todos=[f"rotate {AWS_KEY}"])
@@ -1107,15 +1130,19 @@ def _run_autosave(event, home, extra_env=None, raw_stdin=None):
     Corre hooks/autosave.py en un subproceso, como lo hace Claude Code, con `home` como carpeta de
     datos. El entorno hereda el del test salvo el interruptor de autoguardado y CLAUDE_CONFIG_DIR,
     para que ninguna configuración real del equipo cambie el resultado. `raw_stdin` manda texto
-    tal cual (no JSON); si no, el evento se serializa.
+    o bytes tal cual (no JSON); si no, el evento se serializa.
     """
     env = {**os.environ, "CLAUDE_CONTINUITY_HOME": str(home), **(extra_env or {})}
     for name in ("CLAUDE_CONTINUITY_AUTOSAVE", "CLAUDE_CONFIG_DIR"):
         if name not in (extra_env or {}):
             env.pop(name, None)
     stdin = json.dumps(event) if raw_stdin is None else raw_stdin
-    return subprocess.run([sys.executable, str(HOOKS_DIR / "autosave.py")], input=stdin,
-                          capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+    cmd = [sys.executable, str(HOOKS_DIR / "autosave.py")]
+    if isinstance(stdin, bytes):  # bytes tal cual (UTF-8 sin escapar), sin que Python los recodifique
+        done = subprocess.run(cmd, input=stdin, capture_output=True, env=env, timeout=60)
+        return subprocess.CompletedProcess(done.args, done.returncode, done.stdout.decode("utf-8", "replace"),
+                                           done.stderr.decode("utf-8", "replace"))
+    return subprocess.run(cmd, input=stdin, capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
 
 
 def _assert_silent(result):
@@ -1364,6 +1391,27 @@ def test_hook_survives_garbage_and_huge_or_corrupt_transcripts(tmp_path):
     data = json.loads((home / "checkpoints" / "autosave-sid-big.json").read_text(encoding="utf-8"))
     assert data["stopped_by"] == "rate_limit" and "request" in json.dumps(data)
     assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+
+def test_hook_decodes_stdin_as_utf8_whatever_the_locale(tmp_path):
+    # Claude Code manda el evento en UTF-8 con los caracteres sin escapar; en Windows (cp1252) o con
+    # PYTHONIOENCODING=latin-1, `sys.stdin.read()` los decodificaría mal y apuntaría a otra carpeta
+    proj, home, cfg = _project(tmp_path, "proyecto-ñandú"), tmp_path / "home", tmp_path / "cfg"
+    (cfg / "projects").mkdir(parents=True)
+    t = _transcript(tmp_path / "sesión-ñ.jsonl", ["revisá el flujo de autenticación"], last_text="listo")
+    event = _stop_event("StopFailure", "sid-1", t, proj, error="rate_limit")
+    raw = json.dumps(event, ensure_ascii=False).encode("utf-8")
+    assert "ñandú".encode("utf-8") in raw  # el evento sí lleva los caracteres sin escapar
+    env = {"PYTHONIOENCODING": "latin-1", "PYTHONUTF8": "0", "CLAUDE_CONFIG_DIR": str(cfg)}
+
+    _assert_silent(_run_autosave(None, home, extra_env=env, raw_stdin=raw))
+
+    handoff = proj / ".claude-continuity" / "HANDOFF.md"
+    assert handoff.is_file() and "revisá el flujo de autenticación" in handoff.read_text(encoding="utf-8")
+    data = json.loads((home / "checkpoints" / "autosave-sid-1.json").read_text(encoding="utf-8"))
+    assert data["project_dir"] == str(proj)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cfg", "home", "proyecto-ñandú", "sesión-ñ.jsonl"], \
+        "no debe crear una carpeta con el nombre mal decodificado"
 
 
 def test_plugin_registers_the_autosave_hooks():

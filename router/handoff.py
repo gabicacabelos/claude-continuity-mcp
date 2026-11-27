@@ -56,9 +56,12 @@ def build_handoff(state: dict, git: dict, project_dir: str | Path, *, session_id
     """
     Junta el estado de la sesión (`extract_session_state`) y el de git (`git_state`) en un dict que se
     puede guardar como JSON. Pedidos, último mensaje, tareas, asunto del commit y reglas salen con las
-    credenciales enmascaradas; el dict de git que se recibe no se modifica.
+    credenciales enmascaradas; el dict de git que se recibe no se modifica. El motivo del corte
+    (`stopped_by`) viene de un evento externo: se deja en una sola línea de a lo sumo 40 caracteres
+    (con "api_error" si queda vacío) para que nada raro llegue al checkpoint ni al archivo.
     """
     ts = now if now is not None else time.time()
+    stopped_by = " ".join(_clean(stopped_by).split())[:40] or "api_error"
     git_copy = dict(git or {})
     if isinstance(git_copy.get("subject"), str):
         git_copy["subject"] = _clean(git_copy["subject"])

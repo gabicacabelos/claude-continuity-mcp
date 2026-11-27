@@ -41,7 +41,9 @@ def main() -> None:
     from router.safety import is_allowed
     from router.transcripts import find_transcript
 
-    event = json.loads(sys.stdin.read())
+    # Claude Code manda el evento en UTF-8; `sys.stdin.read()` usaría la codificación del sistema (cp1252 en
+    # Windows) y desfiguraría las rutas con tildes o eñes
+    event = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
     kind = event.get("hook_event_name") if isinstance(event, dict) else None
     if kind not in ("Stop", "StopFailure"):
         return
