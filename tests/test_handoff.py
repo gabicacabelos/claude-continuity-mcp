@@ -159,6 +159,35 @@ def test_extract_ignores_empty_cwd(tmp_path):
     assert C.extract_session_state(only_empty)["cwd"] is None
 
 
+def test_extract_skips_corrupt_lines_and_keeps_the_rest(tmp_path):
+    def edit(path):
+        return _line("assistant", [{"type": "tool_use", "id": "e", "name": "Edit",
+                                    "input": {"file_path": path, "old_string": "a", "new_string": "b"}}])
+
+    def todo(text):
+        return _line("assistant", [{"type": "tool_use", "id": "t", "name": "TodoWrite",
+                                    "input": {"todos": [{"content": text, "status": "pending"}]}}])
+
+    # cuatro formas de línea corrupta, cada una entre líneas válidas: ninguna debe tirar la extracción
+    bad = [
+        '{"type": "user", "message": "oops"}',                                          # message no es un objeto
+        _line("assistant", [{"type": "tool_use", "id": "x", "name": "Edit", "input": "x"}]),  # input no es un objeto
+        _line("user", [{"type": "text", "text": None}]),                                # texto nulo
+        "[" * 100000,                                                                   # anidado hasta RecursionError
+    ]
+    t = tmp_path / "s.jsonl"
+    t.write_text("\n".join([
+        _line("user", "request one"), edit("/w/app/a.py"), todo("early todo"), bad[0],
+        _line("user", "request two"), bad[1], edit("/w/app/b.py"), bad[2],
+        _line("user", "request three"), bad[3], todo("late todo"), _line("user", "request four"),
+    ]) + "\n", encoding="utf-8")
+
+    st = C.extract_session_state(t)  # no debe lanzar
+    assert st["prompts"] == ["request one", "request two", "request three", "request four"]
+    assert st["edited"] == ["/w/app/a.py", "/w/app/b.py"]
+    assert st["todos"] == ["late todo"]
+
+
 # ─── Tarea 2: estado de git de solo lectura y exclusión local ───
 
 @needs_git
