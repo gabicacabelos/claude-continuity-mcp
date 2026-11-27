@@ -1,5 +1,5 @@
 {
-  "description": "Escudo de compactación (checkpoint antes de /compact y contexto restaurado después) y aviso de órdenes pendientes del buzón al abrir o retomar sesión.",
+  "description": "Escudo de compactación (checkpoint antes de /compact y contexto restaurado después), aviso de órdenes pendientes del buzón al abrir o retomar sesión y autoguardado del handoff (autosave: checkpoint al terminar cada turno y HANDOFF.md cuando un error de la API corta la sesión).",
   "hooks": {
     "PreCompact": [
       {
@@ -29,6 +29,28 @@
           {
             "type": "command",
             "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox_peek.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/autosave.py\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project --quiet \"${CLAUDE_PLUGIN_ROOT}/hooks/autosave.py\"",
             "timeout": 30
           }
         ]

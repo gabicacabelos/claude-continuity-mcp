@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from router import handoff as H
 from router import transcripts as T
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+HOOKS_DIR = Path(__file__).parent.parent / "hooks"
 
 
 def _line(kind, content, **extra):
@@ -1095,3 +1098,283 @@ def test_capture_masks_a_secret_in_the_commit_subject(tmp_path):
     markdown = out["file"].read_text(encoding="utf-8")
     _assert_no_secret([checkpoint, markdown, H.render_paste(out["handoff"])])
     assert "drop AKIA█REDACTED█ from the config" in markdown  # el enmascarado deja 4 letras
+
+
+# ─── Tarea 6: hook de autoguardado (hooks/autosave.py) en Stop y StopFailure ───
+
+def _run_autosave(event, home, extra_env=None, raw_stdin=None):
+    """
+    Corre hooks/autosave.py en un subproceso, como lo hace Claude Code, con `home` como carpeta de
+    datos. El entorno hereda el del test salvo el interruptor de autoguardado y CLAUDE_CONFIG_DIR,
+    para que ninguna configuración real del equipo cambie el resultado. `raw_stdin` manda texto
+    tal cual (no JSON); si no, el evento se serializa.
+    """
+    env = {**os.environ, "CLAUDE_CONTINUITY_HOME": str(home), **(extra_env or {})}
+    for name in ("CLAUDE_CONTINUITY_AUTOSAVE", "CLAUDE_CONFIG_DIR"):
+        if name not in (extra_env or {}):
+            env.pop(name, None)
+    stdin = json.dumps(event) if raw_stdin is None else raw_stdin
+    return subprocess.run([sys.executable, str(HOOKS_DIR / "autosave.py")], input=stdin,
+                          capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+
+
+def _assert_silent(result):
+    """El hook sale con 0 y no escribe nada, ni a stdout ni a stderr."""
+    assert result.returncode == 0 and result.stdout == "" and result.stderr == ""
+
+
+def _stop_event(name, session_id, transcript, cwd, **extra):
+    """Evento de hook de Claude Code con los campos que el autoguardado lee."""
+    event = {"hook_event_name": name, "session_id": session_id, "cwd": str(cwd)}
+    if transcript is not None:
+        event["transcript_path"] = str(transcript)
+    return {**event, **extra}
+
+
+def _tree(root):
+    """Todo lo que hay bajo `root` (vacío si no existe): para comprobar que el hook no creó nada."""
+    root = Path(root)
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*")) if root.exists() else []
+
+
+def test_stop_saves_a_checkpoint_silently_and_leaves_the_project_alone(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    r = _run_autosave(_stop_event("Stop", "sid-1", t, proj), home)
+    _assert_silent(r)
+    checkpoint = home / "checkpoints" / "autosave-sid-1.json"
+    assert checkpoint.is_file() and not (proj / ".claude-continuity").exists() and list(proj.iterdir()) == []
+    data = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert data["stopped_by"] == "turn_end" and data["name"] == "autosave-sid-1" and data["auto"] == "autosave"
+    assert "fix the refresh flow" in json.dumps(data)
+
+
+def test_second_stop_inside_the_interval_does_not_read_the_transcript_again(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["first request"], last_text="done")
+    event = _stop_event("Stop", "sid-1", t, proj)
+    checkpoint = home / "checkpoints" / "autosave-sid-1.json"
+
+    _assert_silent(_run_autosave(event, home))
+    first = checkpoint.stat().st_mtime_ns
+    first_text = checkpoint.read_text(encoding="utf-8")
+
+    # la transcripción cambia, pero dentro de los 60 s el hook ni la lee ni reescribe el checkpoint
+    _transcript(t, ["first request", "second request"], last_text="done")
+    _assert_silent(_run_autosave(event, home))
+    assert checkpoint.stat().st_mtime_ns == first and checkpoint.read_text(encoding="utf-8") == first_text
+    assert "second request" not in first_text
+
+    # pasado el intervalo vuelve a guardar y ya ve el pedido nuevo
+    old = time.time() - 120
+    os.utime(checkpoint, (old, old))
+    _assert_silent(_run_autosave(event, home))
+    assert checkpoint.stat().st_mtime_ns != first
+    assert "second request" in checkpoint.read_text(encoding="utf-8")
+
+
+def test_stop_failure_writes_checkpoint_and_handoff_file_without_throttle(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    checkpoint = home / "checkpoints" / "autosave-sid-1.json"
+
+    _assert_silent(_run_autosave(_stop_event("Stop", "sid-1", t, proj), home))
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["stopped_by"] == "turn_end"
+    assert not (proj / ".claude-continuity").exists()
+
+    # un StopFailure justo después (dentro de los 60 s) igual guarda, y escribe HANDOFF.md
+    _assert_silent(_run_autosave(_stop_event("StopFailure", "sid-1", t, proj, error="rate_limit"), home))
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["stopped_by"] == "rate_limit"
+    assert "usage limit" in (proj / ".claude-continuity" / "HANDOFF.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("error", [None, "", 0, {"code": 529}, ["overloaded"], 429])
+def test_stop_failure_always_gets_a_text_reason(tmp_path, error):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    event = _stop_event("StopFailure", "sid-1", t, proj)
+    if error is not None:
+        event["error"] = error
+    _assert_silent(_run_autosave(event, home))
+    stopped_by = json.loads((home / "checkpoints" / "autosave-sid-1.json").read_text(encoding="utf-8"))["stopped_by"]
+    assert isinstance(stopped_by, str) and stopped_by == str(error or "api_error")
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+
+def test_stop_failure_without_transcript_path_discovers_it_by_cwd(tmp_path):
+    proj, home, cfg = _project(tmp_path), tmp_path / "home", tmp_path / "cfg"
+    folder = cfg / "projects" / T.encode_project_dir(proj)
+    folder.mkdir(parents=True)
+    _transcript(folder / "s1.jsonl", ["fix the refresh flow"], last_text="done")
+    # el session_id del evento no tiene transcripción propia: se cae a la más nueva del proyecto
+    event = _stop_event("StopFailure", "sid-unknown", None, proj, error="rate_limit")
+    _assert_silent(_run_autosave(event, home, extra_env={"CLAUDE_CONFIG_DIR": str(cfg)}))
+    assert "fix the refresh flow" in (proj / ".claude-continuity" / "HANDOFF.md").read_text(encoding="utf-8")
+    assert (home / "checkpoints" / "autosave-sid-unknown.json").is_file()
+
+
+def test_stop_failure_discovery_prefers_the_transcript_of_its_own_session(tmp_path):
+    proj, home, cfg = _project(tmp_path), tmp_path / "home", tmp_path / "cfg"
+    folder = cfg / "projects" / T.encode_project_dir(proj)
+    folder.mkdir(parents=True)
+    mine = _transcript(folder / "mine.jsonl", ["my own request"], last_text="done")
+    other = _transcript(folder / "other.jsonl", ["a request from another window"], last_text="done")
+    old = time.time() - 600
+    os.utime(mine, (old, old))  # la otra ventana escribió después: es la más nueva
+    assert other.stat().st_mtime > mine.stat().st_mtime
+    event = _stop_event("StopFailure", "mine", None, proj, error="rate_limit")
+    _assert_silent(_run_autosave(event, home, extra_env={"CLAUDE_CONFIG_DIR": str(cfg)}))
+    text = (proj / ".claude-continuity" / "HANDOFF.md").read_text(encoding="utf-8")
+    assert "my own request" in text and "another window" not in text
+
+
+def test_stop_without_a_usable_transcript_does_nothing(tmp_path):
+    proj, home, cfg = _project(tmp_path), tmp_path / "home", tmp_path / "cfg"
+    folder = cfg / "projects" / T.encode_project_dir(proj)
+    folder.mkdir(parents=True)
+    _transcript(folder / "s1.jsonl", ["fix the refresh flow"], last_text="done")  # existe, pero Stop no la busca
+    env = {"CLAUDE_CONFIG_DIR": str(cfg)}
+    for transcript in (None, "", tmp_path / "missing.jsonl", tmp_path):
+        _assert_silent(_run_autosave(_stop_event("Stop", "sid-1", transcript, proj), home, extra_env=env))
+    assert _tree(home) == [] and list(proj.iterdir()) == []
+
+
+def test_stop_failure_without_any_transcript_does_nothing(tmp_path):
+    proj, home, cfg = _project(tmp_path), tmp_path / "home", tmp_path / "cfg"
+    (cfg / "projects").mkdir(parents=True)
+    _assert_silent(_run_autosave(_stop_event("StopFailure", "sid-1", None, proj, error="rate_limit"), home,
+                                 extra_env={"CLAUDE_CONFIG_DIR": str(cfg)}))
+    assert _tree(home) == [] and list(proj.iterdir()) == []
+
+
+@pytest.mark.parametrize("event_name", [None, "", "SessionStart", "PreCompact", "stop", 7])
+def test_other_or_missing_event_names_do_nothing(tmp_path, event_name):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    event = _stop_event("Stop", "sid-1", t, proj)
+    if event_name is None:
+        del event["hook_event_name"]
+    else:
+        event["hook_event_name"] = event_name
+    _assert_silent(_run_autosave(event, home))
+    assert _tree(home) == [] and list(proj.iterdir()) == []
+
+
+def test_session_id_falls_back_to_the_transcript_file_name(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "abc-123.jsonl", ["fix the refresh flow"], last_text="done")
+    for sid in (None, "", 42):
+        event = _stop_event("Stop", sid, t, proj)
+        if sid is None:
+            del event["session_id"]
+        _assert_silent(_run_autosave(event, home))
+        assert (home / "checkpoints" / "autosave-abc-123.json").is_file()
+        assert [p.name for p in (home / "checkpoints").iterdir()] == ["autosave-abc-123.json"]
+        (home / "checkpoints" / "autosave-abc-123.json").unlink()
+
+
+def test_missing_cwd_uses_the_working_directory_of_the_hook(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    event = _stop_event("StopFailure", "sid-1", t, proj, error="rate_limit")
+    del event["cwd"]
+    env = {**os.environ, "CLAUDE_CONTINUITY_HOME": str(home)}
+    env.pop("CLAUDE_CONTINUITY_AUTOSAVE", None)
+    r = subprocess.run([sys.executable, str(HOOKS_DIR / "autosave.py")], input=json.dumps(event), cwd=str(proj),
+                       capture_output=True, text=True, encoding="utf-8", env=env, timeout=60)
+    _assert_silent(r)
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+
+@needs_git
+def test_stop_failure_from_a_subdirectory_writes_handoff_at_the_repo_root(tmp_path):
+    repo, home = _init_repo(tmp_path / "repo"), tmp_path / "home"
+    sub = repo / "src" / "api"
+    sub.mkdir(parents=True)
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    _assert_silent(_run_autosave(_stop_event("StopFailure", "sid-1", t, sub, error="rate_limit"), home))
+    assert (repo / ".claude-continuity" / "HANDOFF.md").is_file()
+    assert not (sub / ".claude-continuity").exists() and not (repo / "src" / ".claude-continuity").exists()
+    # y con el filtro de raíces: la raíz del repo cuenta, aunque el cwd sea una subcarpeta
+    home2 = tmp_path / "home2"
+    home2.mkdir()
+    (home2 / "router_config.json").write_text(json.dumps({"allowed_roots": [str(repo)]}), encoding="utf-8")
+    _assert_silent(_run_autosave(_stop_event("Stop", "sid-2", t, sub), home2))
+    assert (home2 / "checkpoints" / "autosave-sid-2.json").is_file()
+
+
+def test_kill_switch_and_allowed_roots_stop_the_hook(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    events = [_stop_event("Stop", "sid-1", t, proj), _stop_event("StopFailure", "sid-1", t, proj, error="rate_limit")]
+
+    for off in ("0", "false", "off"):
+        for event in events:
+            _assert_silent(_run_autosave(event, home, extra_env={"CLAUDE_CONTINUITY_AUTOSAVE": off}))
+    assert _tree(home) == [] and list(proj.iterdir()) == []
+
+    # el mismo evento sin el interruptor sí guarda: el hook funciona, lo que lo frenó fue la variable
+    _assert_silent(_run_autosave(events[0], home))
+    assert (home / "checkpoints" / "autosave-sid-1.json").is_file()
+    shutil.rmtree(home)
+
+    home.mkdir()
+    (home / "router_config.json").write_text(json.dumps({"allowed_roots": [str(tmp_path / "elsewhere")]}),
+                                             encoding="utf-8")
+    for event in events:
+        _assert_silent(_run_autosave(event, home))
+    assert _tree(home) == ["router_config.json"] and list(proj.iterdir()) == []
+
+    (home / "router_config.json").write_text(json.dumps({"allowed_roots": [str(tmp_path)]}), encoding="utf-8")
+    _assert_silent(_run_autosave(events[1], home))
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+    (home / "router_config.json").write_text(json.dumps({"autosave": False}), encoding="utf-8")
+    shutil.rmtree(proj / ".claude-continuity")
+    _assert_silent(_run_autosave(events[1], home))
+    assert not (proj / ".claude-continuity").exists()
+
+
+def test_hook_survives_garbage_and_huge_or_corrupt_transcripts(tmp_path):
+    proj, home = _project(tmp_path), tmp_path / "home"
+    good = _transcript(tmp_path / "good.jsonl", ["fix the refresh flow"], last_text="done")
+
+    # entradas que no son un evento utilizable
+    for raw in ("{no es json", "", "   ", "null", "[]", "123", '"Stop"', '{"hook_event_name": ["Stop"]}'):
+        _assert_silent(_run_autosave(None, home, raw_stdin=raw))
+    for event in ({"hook_event_name": "Stop", "transcript_path": [1], "cwd": 5, "session_id": {}},
+                  _stop_event("Stop", "sid-1", tmp_path / "missing.jsonl", proj),
+                  _stop_event("StopFailure", "sid-1", tmp_path / "missing.jsonl", proj, error="rate_limit"),
+                  _stop_event("Stop", "sid-1", good, tmp_path / "no-such-cwd")):
+        _assert_silent(_run_autosave(event, home))
+
+    # transcripción enorme y corrupta: válidas, basura, JSON que no es objeto, bytes no UTF-8 y líneas vacías
+    valid = [_line("user", f"request {i}") for i in range(10)]
+    pieces = ["{truncated", "123", "null", "[]", '"text"', "", "\x00\xff garbage", '{"type": "user", "message": 5}']
+    lines = []
+    for i in range(50_000):
+        lines.append(valid[i % 10] if i % 3 == 0 else pieces[i % len(pieces)])
+    big = tmp_path / "big.jsonl"
+    big.write_bytes(("\n".join(lines) + "\n").encode("utf-8") + b"\xff\xfe not utf-8 \xc3\n")
+    started = time.monotonic()
+    for event in (_stop_event("Stop", "sid-big", big, proj),
+                  _stop_event("StopFailure", "sid-big", big, proj, error="rate_limit")):
+        _assert_silent(_run_autosave(event, home))
+    assert time.monotonic() - started < 30
+    data = json.loads((home / "checkpoints" / "autosave-sid-big.json").read_text(encoding="utf-8"))
+    assert data["stopped_by"] == "rate_limit" and "request" in json.dumps(data)
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+
+def test_plugin_registers_the_autosave_hooks():
+    spec = json.loads((HOOKS_DIR / "hooks.json").read_text(encoding="utf-8"))
+    cfg = spec["hooks"]
+    for event in ("Stop", "StopFailure"):
+        assert len(cfg[event]) == 1 and "matcher" not in cfg[event][0]
+        hook = cfg[event][0]["hooks"][0]
+        assert hook["type"] == "command" and hook["timeout"] == 30
+        assert hook["command"] == 'uv run --no-project --quiet "${CLAUDE_PLUGIN_ROOT}/hooks/autosave.py"'
+    assert "autosave" in spec["description"].lower()
+    assert "pre_compact.py" in cfg["PreCompact"][0]["hooks"][0]["command"]
+    assert len(cfg["SessionStart"]) == 2
+    assert set(cfg) == {"PreCompact", "SessionStart", "Stop", "StopFailure"}
