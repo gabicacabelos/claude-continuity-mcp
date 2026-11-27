@@ -20,7 +20,10 @@ Instalación: viene incluido en el plugin (hooks/hooks.json). A mano, en .claude
 y lo mismo bajo "StopFailure".
 """
 
+import contextlib
+import io
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -82,7 +85,12 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        main()
+        # Las librerías del repo registran avisos (un archivo de reglas corrupto, el ledger) y el logger
+        # de último recurso de Python los imprimiría en stderr: se apaga el logging y, por si algo escribe
+        # directo, stdout y stderr van a un buffer descartable.
+        logging.disable(logging.CRITICAL)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            main()
     except Exception:
         pass
     sys.exit(0)

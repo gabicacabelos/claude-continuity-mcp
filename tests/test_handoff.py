@@ -1394,6 +1394,21 @@ def test_stop_saves_a_checkpoint_silently_and_leaves_the_project_alone(tmp_path)
     assert "fix the refresh flow" in json.dumps(data)
 
 
+def test_hook_stays_silent_even_when_a_library_logs_a_warning(tmp_path):
+    # un archivo de reglas corrupto hace que rules.load_rules registre un warning; el logger de último
+    # recurso de Python lo imprimiría en stderr y se rompería la regla de "ni stdout ni stderr"
+    proj, home = _project(tmp_path), tmp_path / "home"
+    (proj / ".claude-continuity-rules.json").write_text("{no es json", encoding="utf-8")
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+
+    _assert_silent(_run_autosave(_stop_event("Stop", "sid-1", t, proj), home))
+    assert (home / "checkpoints" / "autosave-sid-1.json").is_file()
+
+    _assert_silent(_run_autosave(_stop_event("StopFailure", "sid-2", t, proj, error="rate_limit"), home))
+    assert (home / "checkpoints" / "autosave-sid-2.json").is_file()
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+
 def test_second_stop_inside_the_interval_does_not_read_the_transcript_again(tmp_path):
     proj, home = _project(tmp_path), tmp_path / "home"
     t = _transcript(tmp_path / "s.jsonl", ["first request"], last_text="done")
