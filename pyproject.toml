@@ -30,6 +30,7 @@ dev = ["pytest>=8.0.0"]
 [project.scripts]
 claude-continuity-mcp = "server:main"
 claude-continuity-watch = "router.watch:main"
+claude-continuity-handoff = "router.handoff_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/gabicacabelos/claude-continuity-mcp"

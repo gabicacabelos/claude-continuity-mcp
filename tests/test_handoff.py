@@ -16,6 +16,7 @@ import pytest
 from router import compaction as C
 from router import gitstate as G
 from router import handoff as H
+from router import handoff_cli as H_CLI
 from router import transcripts as T
 
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
@@ -1426,3 +1427,375 @@ def test_plugin_registers_the_autosave_hooks():
     assert "pre_compact.py" in cfg["PreCompact"][0]["hooks"][0]["command"]
     assert len(cfg["SessionStart"]) == 2
     assert set(cfg) == {"PreCompact", "SessionStart", "Stop", "StopFailure"}
+
+
+# ─── Tarea 7: comando claude-continuity-handoff (router/handoff_cli.py) ───
+
+def _cli_env(tmp_path, monkeypatch):
+    """
+    Deja listo el entorno del comando: Claude Code apunta a `<tmp>/cfg` (devuelve esa carpeta) y git
+    a una identidad fija, sin la config global del usuario (firmas, hooks) que cambiaría los commits.
+    """
+    cfg = tmp_path / "cfg"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    for name in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{name}_NAME", "Test")
+        monkeypatch.setenv(f"GIT_{name}_EMAIL", "test@example.com")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    return cfg
+
+
+def _cli_session(cfg, project, name, prompts, mtime, **kw):
+    """Crea `<cfg>/projects/<carpeta de project>/<name>.jsonl` con ese mtime y devuelve la ruta."""
+    folder = Path(cfg) / "projects" / T.encode_project_dir(project)
+    folder.mkdir(parents=True, exist_ok=True)
+    f = _transcript(folder / f"{name}.jsonl", prompts, **kw)
+    os.utime(f, (mtime, mtime))
+    return f
+
+
+def _two_sessions(tmp_path, monkeypatch):
+    """Proyecto con dos sesiones: `s1` (vieja, "old request") y `s2` (nueva, "fix the login")."""
+    cfg = _cli_env(tmp_path, monkeypatch)
+    proj, home = _project(tmp_path), tmp_path / "home"
+    _cli_session(cfg, proj, "s1", ["old request"], 1_000_000, last_text="old done")
+    _cli_session(cfg, proj, "s2", ["fix the login"], 2_000_000, last_text="login fixed")
+    return proj, home
+
+
+def test_cli_prints_paste_text_for_the_latest_session(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home)]) == 0
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over") and "fix the login" in out and len(out) <= 3000
+    assert "old request" not in out
+    assert err == ""
+    assert not (home / "checkpoints").exists() and not home.exists()  # sin --write no se guarda nada
+    assert list(proj.iterdir()) == []
+
+
+def test_cli_session_flag_picks_the_older_session(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--session", "s1"]) == 0
+    out = capsys.readouterr().out
+    assert "old request" in out and "fix the login" not in out
+    # el id de la sesión elegida llega al comando para continuar
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--session", "s1", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["checkpoint"] == "autosave-s1"
+
+
+def test_cli_session_flag_for_an_unknown_session_explains_there_is_none(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--session", "nope"]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "nope" in err and "HANDOFF.md" in err
+
+
+def test_cli_formats_md_and_json(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--format", "md"]) == 0
+    md = capsys.readouterr().out
+    assert md.startswith("# Handoff from Claude Code") and "fix the login" in md and md.endswith("\n")
+    assert not md.endswith("\n\n")
+
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--format", "json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["checkpoint"] == "autosave-s2" and data["prompts"] == ["fix the login"]
+    assert data["stopped_by"] == "manual" and data["last_assistant"] == "login fixed"
+    assert not home.exists()
+
+
+def test_cli_json_keeps_non_ascii_text_readable(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    proj = _project(tmp_path)
+    _cli_session(cfg, proj, "s1", ["revisá el flujo de autenticación, ñandú"], 1_000_000)
+    assert H_CLI.main(["--project", str(proj), "--format", "json"]) == 0
+    assert "revisá el flujo de autenticación, ñandú" in capsys.readouterr().out
+
+
+def test_cli_write_saves_checkpoint_and_file(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--write"]) == 0
+    out, err = capsys.readouterr()
+    handoff = proj / ".claude-continuity" / "HANDOFF.md"
+    assert (home / "checkpoints" / "autosave-s2.json").is_file() and handoff.is_file()
+    assert not (home / "checkpoints" / "autosave-s1.json").exists()
+    assert out.startswith("You are taking over") and "fix the login" in out  # la salida sigue siendo el texto
+    assert "autosave-s2" in err and str(handoff) in err
+    assert "fix the login" in handoff.read_text(encoding="utf-8")
+
+
+def test_cli_home_accepts_a_quoted_path(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    # cmd.exe y otras capas de comillas entregan el valor con las comillas puestas, como en claude-continuity-watch
+    assert H_CLI.main(["--project", str(proj), "--home", f'"{home}"', "--write"]) == 0
+    assert (home / "checkpoints" / "autosave-s2.json").is_file()
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(('"', "'"))] == []
+
+
+def test_cli_without_a_local_transcript_explains_the_cloud_case(tmp_path, monkeypatch, capsys):
+    _cli_env(tmp_path, monkeypatch)
+    proj, home = _project(tmp_path), tmp_path / "home"
+    assert H_CLI.main(["--project", str(proj), "--home", str(home)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "cloud" in err and "HANDOFF.md" in err and "branch" in err
+    assert not home.exists() and list(proj.iterdir()) == []
+
+
+def test_cli_without_a_local_transcript_does_not_commit_or_write_anything(tmp_path, monkeypatch, capsys):
+    _cli_env(tmp_path, monkeypatch)
+    proj, home = _project(tmp_path), tmp_path / "home"
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--push"]) == 2
+    assert not home.exists() and list(proj.iterdir()) == []
+
+
+def test_cli_transcript_flag_skips_the_lookup(tmp_path, monkeypatch, capsys):
+    _cli_env(tmp_path, monkeypatch)  # el árbol de Claude Code queda vacío
+    proj, home = _project(tmp_path), tmp_path / "home"
+    t = _transcript(tmp_path / "elsewhere.jsonl", ["fix the login"], last_text="done")
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--transcript", str(t), "--format", "json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["checkpoint"] == "autosave-elsewhere" and data["prompts"] == ["fix the login"]  # id = nombre del archivo
+
+    assert H_CLI.main(["--project", str(proj), "--transcript", str(t), "--session", "mine", "--format", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["checkpoint"] == "autosave-mine"  # --session manda
+
+
+def test_cli_transcript_flag_with_a_missing_file_is_a_usage_error(tmp_path, monkeypatch, capsys):
+    _cli_env(tmp_path, monkeypatch)
+    assert H_CLI.main(["--project", str(_project(tmp_path)), "--transcript", str(tmp_path / "nope.jsonl")]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "nope.jsonl" in err
+
+
+def test_cli_project_defaults_to_the_current_directory(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    proj = _project(tmp_path)
+    _cli_session(cfg, proj, "s1", ["fix the login"], 1_000_000)
+    monkeypatch.chdir(proj)
+    assert H_CLI.main([]) == 0
+    assert "fix the login" in capsys.readouterr().out
+    assert H_CLI.main(["--project", "."]) == 0  # una ruta relativa se resuelve contra el directorio actual
+    assert "fix the login" in capsys.readouterr().out
+
+
+@needs_git
+def test_cli_finds_the_transcript_of_the_repo_root_from_a_subdirectory(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    repo, home = _init_repo(tmp_path / "repo"), tmp_path / "home"
+    sub = repo / "src" / "api"
+    sub.mkdir(parents=True)
+    # Claude Code arrancó en la raíz del repo; el comando corre desde una subcarpeta
+    _cli_session(cfg, repo, "s1", ["fix the login"], 1_000_000)
+    assert H_CLI.main(["--project", str(sub), "--home", str(home), "--write"]) == 0
+    assert "fix the login" in capsys.readouterr().out
+    assert (repo / ".claude-continuity" / "HANDOFF.md").is_file() and not (sub / ".claude-continuity").exists()
+
+
+def test_cli_max_chars_bounds_the_whole_output_and_has_a_floor(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    proj = _project(tmp_path)
+    _cli_session(cfg, proj, "s1", [f"request number {i} " + "word " * 60 for i in range(8)], 1_000_000,
+                 last_text="z" * 500)
+    for limit in (200, 300, 777, 1500):
+        assert H_CLI.main(["--project", str(proj), "--max-chars", str(limit)]) == 0
+        out = capsys.readouterr().out
+        assert 0 < len(out) <= limit, f"the text plus its line break must fit in {limit}"
+    assert H_CLI.main(["--project", str(proj), "--max-chars", "199"]) == 2
+    out, err = capsys.readouterr()
+    assert out == "" and "200" in err
+    # el piso es del texto para pegar: md y json no tienen tope
+    assert H_CLI.main(["--project", str(proj), "--max-chars", "50", "--format", "md"]) == 0
+    assert capsys.readouterr().out.startswith("# Handoff from Claude Code")
+
+
+def test_cli_paste_text_masks_a_pasted_secret(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    proj = _project(tmp_path)
+    _cli_session(cfg, proj, "s1", [f"use {AWS_KEY} for the upload"], 1_000_000, last_text=f"stored {AWS_KEY}")
+    for fmt in ("paste", "md", "json"):
+        assert H_CLI.main(["--project", str(proj), "--format", fmt]) == 0
+        _assert_no_secret([capsys.readouterr().out])
+
+
+def _repo_with_session(tmp_path, monkeypatch):
+    """Repo con un commit, una sesión de Claude Code en él y `other.txt` agregado al índice sin commitear."""
+    cfg = _cli_env(tmp_path, monkeypatch)
+    repo = _init_repo(tmp_path / "repo")
+    _cli_session(cfg, repo, "s1", ["fix the login"], 1_000_000, last_text="done")
+    (repo / "other.txt").write_text("someone else's work\n", encoding="utf-8")
+    _git(repo, "add", "other.txt")
+    return repo, tmp_path / "home"
+
+
+@needs_git
+def test_cli_commit_commits_only_the_handoff_file(tmp_path, monkeypatch, capsys):
+    repo, home = _repo_with_session(tmp_path, monkeypatch)
+    before = _git(repo, "rev-parse", "HEAD")
+    assert H_CLI.main(["--project", str(repo), "--home", str(home), "--commit"]) == 0  # --commit implica --write
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over")
+    assert _git(repo, "rev-parse", "HEAD~1") == before, "exactly one new commit"
+    assert _git(repo, "log", "-1", "--format=%s") == "chore: handoff from Claude Code"
+    assert _git(repo, "show", "--name-only", "--format=", "HEAD").split() == [".claude-continuity/HANDOFF.md"]
+    assert _git(repo, "status", "--porcelain") == "A  other.txt"  # sigue en el índice, sin commitear
+    assert "fix the login" in _git(repo, "show", "HEAD:.claude-continuity/HANDOFF.md")
+    # avisa antes de commitear que el archivo lleva los pedidos del usuario, y qué se hizo
+    assert "requests" in err and "secrets are masked" in err
+    assert "Committed" in err and "Pushed" not in err
+
+
+@needs_git
+def test_cli_commit_from_a_subdirectory_commits_the_file_at_the_repo_root(tmp_path, monkeypatch, capsys):
+    repo, home = _repo_with_session(tmp_path, monkeypatch)
+    sub = repo / "src" / "api"
+    sub.mkdir(parents=True)
+    assert H_CLI.main(["--project", str(sub), "--home", str(home), "--commit"]) == 0
+    assert _git(repo, "show", "--name-only", "--format=", "HEAD").split() == [".claude-continuity/HANDOFF.md"]
+
+
+@needs_git
+def test_cli_push_pushes_the_current_branch(tmp_path, monkeypatch, capsys):
+    repo, home = _repo_with_session(tmp_path, monkeypatch)
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    _git(repo, "remote", "add", "origin", str(remote))
+
+    assert H_CLI.main(["--project", str(repo), "--home", str(home), "--push"]) == 0  # --push implica --commit
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over") and "Pushed" in err
+    head = _git(repo, "rev-parse", "HEAD")
+    assert _git(repo, "log", "-1", "--format=%s") == "chore: handoff from Claude Code"
+    assert _git(repo, "ls-remote", "origin", "main").split()[0] == head
+    assert _git(repo, "rev-parse", "--abbrev-ref", "@{u}") == "origin/main"  # -u deja el upstream
+    assert _git(repo, "status", "--porcelain") == "A  other.txt"
+
+
+def test_cli_commit_failure_still_prints_the_output_and_exits_1(tmp_path, monkeypatch, capsys):
+    cfg = _cli_env(tmp_path, monkeypatch)
+    proj, home = _project(tmp_path), tmp_path / "home"  # no es un repo: no hay dónde commitear
+    _cli_session(cfg, proj, "s1", ["fix the login"], 1_000_000)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--commit"]) == 1
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over") and "fix the login" in out
+    assert err.strip() and "Committed" not in err
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()  # lo pedido antes del commit quedó hecho
+
+
+@needs_git
+def test_cli_push_failure_keeps_the_commit_and_exits_1(tmp_path, monkeypatch, capsys):
+    repo, home = _repo_with_session(tmp_path, monkeypatch)  # sin remoto `origin`
+    assert H_CLI.main(["--project", str(repo), "--home", str(home), "--push"]) == 1
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over")
+    assert "Committed" in err and "Pushed" not in err and "origin" in err
+    assert _git(repo, "log", "-1", "--format=%s") == "chore: handoff from Claude Code"
+
+
+def test_cli_help_describes_the_command(capsys):
+    with pytest.raises(SystemExit) as exc:
+        H_CLI.main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "claude-continuity-handoff" in out and "--commit" in out and "--push" in out
+
+
+def test_cli_rejects_an_unknown_format(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc:
+        H_CLI.main(["--format", "html"])
+    assert exc.value.code == 2
+
+
+# commit_handoff: nunca lanza; devuelve qué pasó
+
+@needs_git
+def test_commit_handoff_commits_only_that_file_and_never_pushes_by_default(tmp_path, monkeypatch):
+    _cli_env(tmp_path, monkeypatch)
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".claude-continuity").mkdir()
+    handoff = repo / ".claude-continuity" / "HANDOFF.md"
+    handoff.write_text("hello\n", encoding="utf-8")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "exclude").write_text(".claude-continuity/\n", encoding="utf-8")  # ignorado, como en el hook
+    (repo / "other.txt").write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "other.txt")
+
+    assert H_CLI.commit_handoff(repo, handoff, push=False) == {"committed": True, "pushed": False, "error": None}
+    assert _git(repo, "show", "--name-only", "--format=", "HEAD").split() == [".claude-continuity/HANDOFF.md"]
+    assert _git(repo, "status", "--porcelain") == "A  other.txt"
+
+
+@needs_git
+def test_commit_handoff_with_nothing_new_to_commit_still_pushes(tmp_path, monkeypatch):
+    # reintentar un --push que falló no debe quedar bloqueado por "nothing to commit"
+    _cli_env(tmp_path, monkeypatch)
+    repo = _init_repo(tmp_path / "repo")
+    remote = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+    handoff = repo / "HANDOFF.md"
+    handoff.write_text("hello\n", encoding="utf-8")
+
+    assert H_CLI.commit_handoff(repo, handoff, push=False)["committed"] is True  # commit sin remoto aún
+    _git(repo, "remote", "add", "origin", str(remote))
+    commits = _git(repo, "rev-list", "--count", "HEAD")
+    assert H_CLI.commit_handoff(repo, handoff, push=True) == {"committed": False, "pushed": True, "error": None}
+    assert _git(repo, "rev-list", "--count", "HEAD") == commits, "no empty commit"
+    assert _git(repo, "ls-remote", "origin", "main").split()[0] == _git(repo, "rev-parse", "HEAD")
+
+
+@needs_git
+def test_commit_handoff_reports_a_failed_push_but_keeps_the_commit(tmp_path, monkeypatch):
+    _cli_env(tmp_path, monkeypatch)
+    repo = _init_repo(tmp_path / "repo")
+    handoff = repo / "HANDOFF.md"
+    handoff.write_text("hello\n", encoding="utf-8")
+    result = H_CLI.commit_handoff(repo, handoff, push=True)  # sin remoto `origin`
+    assert result["committed"] is True and result["pushed"] is False
+    assert isinstance(result["error"], str) and "origin" in result["error"]
+    assert _git(repo, "log", "-1", "--format=%s") == "chore: handoff from Claude Code"
+
+
+def test_commit_handoff_outside_a_repo_reports_the_error_and_skips_the_rest(tmp_path, monkeypatch):
+    _cli_env(tmp_path, monkeypatch)
+    proj = _project(tmp_path)
+    handoff = proj / "HANDOFF.md"
+    handoff.write_text("hello\n", encoding="utf-8")
+    result = H_CLI.commit_handoff(proj, handoff, push=True)
+    assert result["committed"] is False and result["pushed"] is False
+    assert isinstance(result["error"], str) and result["error"].strip()
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError("git"), subprocess.TimeoutExpired("git", 60),
+                                     PermissionError("denied"), ValueError("embedded null")])
+def test_commit_handoff_never_raises(tmp_path, monkeypatch, failure):
+    def boom(*args, **kwargs):
+        raise failure
+    monkeypatch.setattr(H_CLI.subprocess, "run", boom)
+    result = H_CLI.commit_handoff(tmp_path, tmp_path / "HANDOFF.md", push=True)
+    assert result["committed"] is False and result["pushed"] is False
+    assert isinstance(result["error"], str) and result["error"]
+
+
+def test_commit_handoff_runs_git_without_a_shell_in_the_repo(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 1 if cmd[1] == "diff" else 0, "", "")  # diff 1 = hay cambios
+    monkeypatch.setattr(H_CLI.subprocess, "run", fake_run)
+    sub = tmp_path / ".claude-continuity"
+    H_CLI.commit_handoff(tmp_path, sub / "HANDOFF.md", push=True)
+    steps = [c for c, _ in calls]
+    assert steps[0] == ["git", "add", "-f", "--", ".claude-continuity/HANDOFF.md"]
+    assert ["git", "commit", "--only", "-m", "chore: handoff from Claude Code", "--",
+            ".claude-continuity/HANDOFF.md"] in steps
+    assert steps[-1] == ["git", "push", "-u", "origin", "HEAD"]
+    assert all(kw["cwd"] == str(tmp_path) and kw["shell"] is False and kw["timeout"] == 60 for _, kw in calls)
+    assert not any("commit.gpgsign=false" in " ".join(c) for c in steps), "the user's own git config applies"
+
+
+def test_console_script_is_declared():
+    toml = (Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'claude-continuity-handoff = "router.handoff_cli:main"' in toml
