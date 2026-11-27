@@ -28,6 +28,7 @@ from .verify import build_anchors
 
 MAX_PROMPTS = 5
 MAX_PROMPT_CHARS = 400
+MAX_LAST_ASSISTANT_CHARS = 600
 MAX_FILES = 15
 MAX_AUTO_CHECKPOINTS = 10
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
@@ -60,16 +61,25 @@ def _human_prompt(text: str) -> str | None:
 
 
 def extract_session_state(transcript_path: str | Path) -> dict:
+    """
+    Estado de la sesión desde la transcripción: pedidos, archivos editados y leídos, tareas
+    abiertas, el último texto del asistente (`last_assistant`, "" si no hubo) y el último
+    `cwd` de nivel superior (`cwd`, None si ninguna línea lo trae).
+    """
     prompts: list[str] = []
     edited: list[str] = []
     read: list[str] = []
     todos: list[str] = []
+    last_assistant = ""
+    cwd: str | None = None
     with open(transcript_path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
             try:
                 entry = json.loads(raw)
             except ValueError:
                 continue
+            if isinstance(entry.get("cwd"), str):
+                cwd = entry["cwd"]
             kind = entry.get("type")
             if kind not in ("user", "assistant"):
                 continue
@@ -80,6 +90,9 @@ def extract_session_state(transcript_path: str | Path) -> dict:
                     if prompt:
                         prompts.append(prompt)
                 continue
+            spoken = [t for t in _texts(content) if isinstance(t, str) and t.strip()]
+            if spoken:  # un turno solo de herramientas no borra el último texto; `thinking` no cuenta
+                last_assistant = spoken[-1]
             for block in content if isinstance(content, list) else []:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
@@ -99,7 +112,8 @@ def extract_session_state(transcript_path: str | Path) -> dict:
                              if isinstance(t, dict) and t.get("status") != "completed" and t.get("content")]
     read = [p for p in read if p not in edited]  # lo editado ya figura como editado
     return {"prompts": prompts[-MAX_PROMPTS:], "edited": edited[-MAX_FILES:],
-            "read": read[-MAX_FILES:], "todos": todos}
+            "read": read[-MAX_FILES:], "todos": todos,
+            "last_assistant": " ".join(last_assistant.split())[:MAX_LAST_ASSISTANT_CHARS], "cwd": cwd}
 
 
 def checkpoint_name(session_id: str) -> str:
