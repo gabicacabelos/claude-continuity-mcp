@@ -92,9 +92,11 @@ state behind. It was extracted automatically from that session, not summarized b
 3. **Verify, don't assume.** Run `git status` and `git diff`: they show what really changed.
    With `resume`, `files` and `hint` also list which tracked files changed since the checkpoint.
 4. **Tell the user what you can't see.** If `HANDOFF.md` has a `Not visible to you:` line (in the
-   `resume` payload: `git.ahead` commits not pushed, `git.dirty_total` files modified but not
+   `resume` payload: `git.ahead` commits not pushed, `git.unpushed` commits on a branch with
+   no upstream (the line says "no upstream branch"), `git.dirty_total` files modified but not
    committed), tell the user in plain words what it says: that work exists only on the machine
-   where Claude ran, and you can't see it.
+   where Claude ran, and you can't see it. No `Not visible to you` line does not prove
+   everything is pushed: check `git status -sb` yourself.
 5. Continue with the first open task (`Open tasks`, or `open_items`). If there are none, continue
    from where Claude stopped. Brief the user in 2–3 lines before you start.
 

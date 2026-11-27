@@ -133,12 +133,22 @@ def _status_lines(h: dict) -> list[str]:
                 branch += f' "{git["subject"]}"'
         lines.append(branch)
     # Lo que no está en el remoto ni en un commit no lo ve nadie que no tenga esta máquina.
-    # Solo depende de ahead y dirty_total: un git "no disponible" sin esos datos no avisa nada.
+    # Depende de ahead, unpushed y dirty_total: un git "no disponible" sin esos datos no avisa nada.
     ahead = git.get("ahead", 0) or 0
     dirty_total = git.get("dirty_total", 0) or 0
     hidden = []
     if ahead > 0:
         hidden.append(_count(ahead, "commit", "commits") + " not pushed")
+    # Sin upstream `ahead` vale 0 aunque nada se haya subido: ahí manda `unpushed` (commits que ningún
+    # remoto tiene). Con HEAD suelto no hay rama a la que faltarle el upstream, y sin commits no hay qué subir.
+    if git.get("available") and git.get("branch") and git.get("head") and not git.get("upstream"):
+        unpushed = git.get("unpushed")
+        if isinstance(unpushed, int) and not isinstance(unpushed, bool):
+            if unpushed > 0:
+                hidden.append("no upstream branch: " + _count(unpushed, "commit", "commits")
+                              + " not on any remote")
+        else:  # no se pudo contar: se avisa sin número
+            hidden.append("no upstream branch: its commits may not be pushed")
     if dirty_total > 0:
         hidden.append(_count(dirty_total, "file", "files") + " modified, not committed")
     if hidden:
@@ -384,11 +394,13 @@ def collect_handoff(transcript_path: str | Path, project_dir: str | Path, sessio
     # una ruta que no es texto (una herramienta con file_path raro) rompería el hash al guardar
     state["edited"] = [p for p in state.get("edited") or [] if isinstance(p, str)]
     state["read"] = [p for p in state.get("read") or [] if isinstance(p, str)]
-    root = gitstate.project_root(project_dir) or Path(project_dir)
+    repo_root = gitstate.project_root(project_dir)
+    root = repo_root or Path(project_dir)
     rules_file = project_rules.find_rules_file(root)
     rules = project_rules.inject_texts(project_rules.load_rules(rules_file.parent)) if rules_file else []
-    return build_handoff(state, gitstate.git_state(root), root, session_id=session_id,
-                         stopped_by=stopped_by, rules=rules)
+    # la raíz ya está calculada: git_state no repite el rev-parse (el hook tiene un tope de 30 s)
+    git = gitstate.git_state(repo_root, root=repo_root) if repo_root else {"available": False}
+    return build_handoff(state, git, root, session_id=session_id, stopped_by=stopped_by, rules=rules)
 
 
 def capture(transcript_path: str | Path, project_dir: str | Path, session_id: str, stopped_by: str,

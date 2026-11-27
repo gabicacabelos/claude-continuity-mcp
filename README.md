@@ -393,7 +393,7 @@ It writes `HANDOFF.md`, commits **only that file** and pushes the current branch
 
 - **Nothing is ever committed or pushed automatically.** Only `--commit` and `--push` do it.
 - **The file contains your requests.** Secrets and tokens are masked; other private text is not. Read it before pushing to a repo other people can see. Once committed it is a normal tracked file: remove it from the branch when you're done.
-- **Work that isn't committed and pushed doesn't cross.** The handoff says so on its own line, for example `Not visible to you: 2 commits not pushed · 3 files modified, not committed`, and the bundled skill tells the receiving agent to relay it to you.
+- **Work that isn't committed and pushed doesn't cross.** The handoff says so on its own line, for example `Not visible to you: 2 commits not pushed · 3 files modified, not committed`, and the bundled skill tells the receiving agent to relay it to you. The absence of that line is not proof that everything is pushed (see Limits below).
 
 **Privacy and switches**
 
@@ -407,7 +407,7 @@ It writes `HANDOFF.md`, commits **only that file** and pushes the current branch
 - **Claude Code only.** Hooks are a Claude Code feature. Other agents can read what Claude Code saved, but they don't save anything themselves.
 - **It's on by default for existing plugin users.** Once the plugin updates to a version that includes it (`claude plugin update project-continuity@project-continuity`, after the v3.10 release), every turn end writes a checkpoint file under `~/.claude-continuity/checkpoints/`. That's a change in behavior: use the switches above to turn it off.
 - **Not verified yet:** whether your plan's usage limit fires `StopFailure`, and whether the plugin's hooks run in cloud sessions. They can't be tested from this repo's suite: the checklist is in [`docs/handoff-manual-check.md`](docs/handoff-manual-check.md). The per-turn autosave doesn't depend on `StopFailure`, but it can lag: the checkpoint can be behind by up to the 60 s throttle, and the turn the limit cut off never reaches `Stop`, so its work is only captured if `StopFailure` fires. Also, `HANDOFF.md` is only written by `StopFailure` or by the command. The command needs no Claude, so if the file isn't there, run `claude-continuity-handoff --write` from a terminal.
-- **"Not visible to you" counts commits against the branch's upstream.** A branch that was never pushed has no upstream, so its commits are not counted; uncommitted files always are.
+- **"Not visible to you" is a best effort, and its absence is not proof that everything is pushed.** With an upstream it counts the commits ahead of it. On a branch without an upstream (a never-pushed branch, the usual case in the cloud) it counts the commits that are on no remote and says `no upstream branch`. Either count uses the last fetch, so it can be out of date, and uncommitted files are always counted. Run `git status -sb` to be sure.
 - **It's an extract, not a summary.** The next agent gets what you asked, what Claude last said, the open todos and what changed on disk and in git, not why Claude was doing it.
 
 ## Installation

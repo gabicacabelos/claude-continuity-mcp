@@ -67,16 +67,20 @@ def _parse_header(header: str) -> tuple[str | None, str | None, int, int]:
 
 
 def git_state(project_dir: str | Path, max_files: int = DEFAULT_MAX_FILES,
-              timeout: float = DEFAULT_TIMEOUT) -> dict:
+              timeout: float = DEFAULT_TIMEOUT, *, root: Path | None = None) -> dict:
     """
     Estado del repo de `project_dir`:
-    {"available": True, "root", "branch", "upstream", "ahead", "behind", "head", "subject",
-     "dirty", "dirty_total"}, o {"available": False} si no hay repo, git o algo falla.
+    {"available": True, "root", "branch", "upstream", "ahead", "behind", "unpushed", "head",
+     "subject", "dirty", "dirty_total"}, o {"available": False} si no hay repo, git o algo falla.
     `branch` es None con HEAD suelto; `head` y `subject`, sin commits; ahead/behind valen 0 sin
-    upstream. `dirty` lista hasta `max_files` rutas (relativas al repo, con "/"); `dirty_total`
-    cuenta todas. Las carpetas sin trackear aparecen colapsadas ("carpeta/").
+    upstream. Sin upstream, `unpushed` cuenta los commits de HEAD que no están en ninguna rama
+    remota conocida (la última descarga; `ahead` no dice nada ahí); es None si hay upstream, no hay
+    commits o git no lo pudo contar. `dirty` lista hasta `max_files` rutas (relativas al repo, con
+    "/"); `dirty_total` cuenta todas. Las carpetas sin trackear aparecen colapsadas ("carpeta/").
+    Quien ya calculó la raíz del repo la pasa en `root` y se ahorra otro `rev-parse`.
     """
-    root = project_root(project_dir)
+    if root is None:
+        root = project_root(project_dir)
     if root is None:
         return {"available": False}
     status = _git(root, "status", "--porcelain=v1", "-b", "-z", timeout=timeout)
@@ -109,8 +113,15 @@ def git_state(project_dir: str | Path, max_files: int = DEFAULT_MAX_FILES,
     if log and "\0" in log:
         head, _, subject = log.rstrip("\r\n").partition("\0")
         head, subject = head or None, subject or None
+    # Una rama sin upstream (lo normal en la nube) tampoco tiene `ahead`: se cuentan los commits que
+    # ningún remoto tiene. Si git falla o contesta algo raro queda None, nunca un 0 inventado.
+    unpushed = None
+    if upstream is None and head:
+        out = _git(root, "rev-list", "--count", "HEAD", "--not", "--remotes", timeout=timeout)
+        if out and out.strip().isdigit():
+            unpushed = int(out.strip())
     return {"available": True, "root": str(root), "branch": branch, "upstream": upstream,
-            "ahead": ahead, "behind": behind, "head": head, "subject": subject,
+            "ahead": ahead, "behind": behind, "unpushed": unpushed, "head": head, "subject": subject,
             "dirty": dirty, "dirty_total": total}
 
 

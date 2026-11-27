@@ -283,6 +283,100 @@ def test_git_state_empty_repo_and_detached_head(tmp_path):
 
 
 @needs_git
+def test_git_state_counts_commits_on_no_remote_when_there_is_no_upstream(tmp_path):
+    # sin ningún remoto: el único commit no está en ningún lado
+    repo = _init_repo(tmp_path / "repo")
+    st = G.git_state(repo)
+    assert st["upstream"] is None and st["unpushed"] == 1
+    (repo / "b.txt").write_text("two\n", encoding="utf-8")
+    _git(repo, "add", "b.txt")
+    _git(repo, "commit", "-q", "-m", "second")
+    assert G.git_state(repo)["unpushed"] == 2
+
+    # con remoto, pero la rama nueva no tiene upstream: solo cuenta lo que ningún remoto tiene
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "origin", "main")  # sin -u: no hay upstream, pero sí un origin/main
+    st = G.git_state(repo)
+    assert st["upstream"] is None and st["unpushed"] == 0
+    _git(repo, "checkout", "-q", "-b", "feature")
+    (repo / "c.txt").write_text("three\n", encoding="utf-8")
+    _git(repo, "add", "c.txt")
+    _git(repo, "commit", "-q", "-m", "on feature")
+    st = G.git_state(repo)
+    assert st["branch"] == "feature" and st["upstream"] is None and st["unpushed"] == 1
+
+
+@needs_git
+def test_git_state_unpushed_is_none_when_it_was_not_computed(tmp_path, monkeypatch):
+    # con upstream no se calcula: ahead ya lo dice
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    repo = _init_repo(tmp_path / "repo")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-q", "-u", "origin", "main")
+    st = G.git_state(repo)
+    assert st["upstream"] == "origin/main" and st["unpushed"] is None
+
+    # sin commits no hay nada que contar
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _git(empty, "init", "-q", "-b", "main")
+    assert G.git_state(empty)["unpushed"] is None
+
+    # si el rev-list falla (o devuelve basura) no se inventa un número ni se lanza
+    lone = _init_repo(tmp_path / "lone")
+    real = G._git
+
+    def broken(cwd, *args, **kw):
+        return None if args[:1] == ("rev-list",) else real(cwd, *args, **kw)
+
+    monkeypatch.setattr(G, "_git", broken)
+    assert G.git_state(lone)["unpushed"] is None
+    monkeypatch.setattr(G, "_git", lambda cwd, *a, **kw: "x\n" if a[:1] == ("rev-list",) else real(cwd, *a, **kw))
+    assert G.git_state(lone)["unpushed"] is None
+
+
+@needs_git
+def test_git_state_detached_head_still_reports_what_no_remote_has(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    _git(repo, "checkout", "-q", "--detach")
+    st = G.git_state(repo)
+    assert st["branch"] is None and st["unpushed"] == 1
+
+
+@needs_git
+def test_git_state_reuses_the_given_root_without_another_rev_parse(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "src" / "api").mkdir(parents=True)
+    root = G.project_root(repo)
+    calls = []
+    real = G._git
+    monkeypatch.setattr(G, "_git", lambda cwd, *a, **kw: (calls.append(a), real(cwd, *a, **kw))[1])
+    st = G.git_state(root, root=root)
+    assert st["available"] is True and Path(st["root"]).resolve() == repo.resolve()
+    assert not [a for a in calls if a[:1] == ("rev-parse",)]
+    # sin `root` se sigue resolviendo solo, también desde una subcarpeta
+    calls.clear()
+    assert Path(G.git_state(repo / "src" / "api")["root"]).resolve() == repo.resolve()
+    assert [a for a in calls if a[:1] == ("rev-parse",)]
+
+
+@needs_git
+def test_collect_handoff_resolves_the_repo_root_only_once(tmp_path, monkeypatch):
+    repo = _init_repo(tmp_path / "repo")
+    (repo / "src").mkdir()
+    t = _transcript(tmp_path / "s.jsonl", ["hi"], cwd=repo)
+    calls = []
+    real = G._git
+    monkeypatch.setattr(G, "_git", lambda cwd, *a, **kw: (calls.append(a), real(cwd, *a, **kw))[1])
+    h = H.collect_handoff(t, repo / "src", "sid-1", "manual")
+    assert Path(h["project_dir"]).resolve() == repo.resolve() and h["git"]["available"] is True
+    assert len([a for a in calls if a[:1] == ("rev-parse",)]) == 1
+
+
+@needs_git
 def test_git_state_caps_the_dirty_list(tmp_path):
     repo = _init_repo(tmp_path / "repo")
     for i in range(40):
@@ -664,6 +758,64 @@ def test_not_visible_line_only_when_something_is_unshared():
     assert "Not visible to you" not in H.render_markdown(_h(git={"available": False}))
     # solo depende de ahead y dirty_total, no de `available`
     assert "Not visible to you: 1 commit not pushed" in H.render_markdown(_h(git={"ahead": 1}))
+
+
+def test_not_visible_line_flags_commits_on_a_branch_without_upstream():
+    def md(**git):
+        return H.render_markdown(_h(git=_h_git(upstream=None, **git)))
+
+    assert "Not visible to you: no upstream branch: 3 commits not on any remote\n" in md(unpushed=3)
+    assert "Not visible to you: no upstream branch: 1 commit not on any remote\n" in md(unpushed=1)
+    # no se pudo contar: se avisa igual, sin número
+    assert "Not visible to you: no upstream branch: its commits may not be pushed\n" in md(unpushed=None)
+    assert "no upstream branch: its commits may not be pushed" in md()  # una clave ausente es lo mismo
+    assert "no upstream branch: its commits may not be pushed" in md(unpushed="3")  # un tipo raro, también
+    # todo está en algún remoto: nada que avisar
+    assert "Not visible to you" not in md(unpushed=0)
+    # se junta con lo demás, con el mismo separador
+    assert ("Not visible to you: no upstream branch: 2 commits not on any remote · "
+            "1 file modified, not committed") in md(unpushed=2, dirty_total=1, dirty=["a"])
+    # con upstream manda `ahead`, aunque el handoff traiga un unpushed viejo
+    assert "no upstream branch" not in H.render_markdown(_h(git=_h_git(unpushed=5)))
+    # el texto para pegar lo lleva igual
+    assert "no upstream branch: 3 commits not on any remote" in H.render_paste(
+        _h(git=_h_git(upstream=None, unpushed=3)))
+
+
+def test_no_upstream_line_needs_a_branch_with_commits():
+    base = _h_git(upstream=None, unpushed=4)
+    assert "no upstream branch" not in H.render_markdown(_h(git={**base, "branch": None}))  # HEAD suelto
+    assert "no upstream branch" not in H.render_markdown(_h(git={**base, "head": None, "subject": None}))
+    assert "no upstream branch" not in H.render_markdown(_h(git={"available": False, "unpushed": 4}))
+    assert "no upstream branch" not in H.render_markdown(_h(git={**base, "available": False}))
+
+
+@needs_git
+def test_a_never_pushed_branch_is_flagged_end_to_end(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    t = _transcript(tmp_path / "s.jsonl", ["hi"], cwd=repo)
+    h = H.collect_handoff(t, repo, "sid-1", "manual")
+    assert h["git"]["unpushed"] == 1
+    assert "Not visible to you: no upstream branch: 1 commit not on any remote" in H.render_markdown(h)
+
+    _git(repo, "checkout", "-q", "--detach")
+    h = H.collect_handoff(t, repo, "sid-1", "manual")
+    assert "no upstream branch" not in H.render_markdown(h)
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    _git(empty, "init", "-q", "-b", "main")
+    h = H.collect_handoff(t, empty, "sid-1", "manual")
+    assert h["git"]["head"] is None and "no upstream branch" not in H.render_markdown(h)
+
+    remote = tmp_path / "remote.git"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(remote))
+    pushed = _init_repo(tmp_path / "pushed")
+    _git(pushed, "remote", "add", "origin", str(remote))
+    _git(pushed, "push", "-q", "origin", "main")  # sin -u: sin upstream, pero todo está en origin
+    h = H.collect_handoff(t, pushed, "sid-1", "manual")
+    assert h["git"]["upstream"] is None and h["git"]["unpushed"] == 0
+    assert "Not visible to you" not in H.render_markdown(h)
 
 
 def _big_handoff(**over):
