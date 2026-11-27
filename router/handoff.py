@@ -339,9 +339,14 @@ def write_handoff_file(h: dict, root: str | Path) -> Path:
     """
     Escribe `<root>/.claude-continuity/HANDOFF.md` y lo excluye de git (el ignore local, que no se
     commitea) para que no ensucie `git status`. Fuera de un repo solo escribe. Devuelve la ruta.
+    Si la carpeta es un enlace simbólico, o resuelve fuera del proyecto, lanza OSError sin escribir
+    nada: un repo clonado podría traer `.claude-continuity` apuntando a cualquier carpeta, y el
+    StopFailure escribe solo, sin que el usuario haga nada.
     """
     root = Path(root)
     folder = root / HANDOFF_DIR
+    if folder.is_symlink() or (folder.exists() and not folder.resolve().is_relative_to(root.resolve())):
+        raise OSError(f"{folder} is a symlink or leaves the project; not writing")
     folder.mkdir(parents=True, exist_ok=True)
     gitstate.add_local_exclude(root, HANDOFF_DIR + "/")  # antes de escribir: el archivo nunca aparece en git
     path = folder / HANDOFF_FILE

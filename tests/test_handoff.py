@@ -1394,6 +1394,84 @@ def test_stop_saves_a_checkpoint_silently_and_leaves_the_project_alone(tmp_path)
     assert "fix the refresh flow" in json.dumps(data)
 
 
+def _symlink_dir_or_skip(link, target):
+    """Crea `link` como enlace simbólico a la carpeta `target`; en plataformas sin permiso, salta el test."""
+    try:
+        os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform cannot create symlinks")
+
+
+def test_write_handoff_file_refuses_a_symlinked_folder(tmp_path):
+    # un repo clonado puede traer `.claude-continuity` como enlace a cualquier carpeta del equipo
+    proj, outside = _project(tmp_path), tmp_path / "outside"
+    outside.mkdir()
+    _symlink_dir_or_skip(proj / ".claude-continuity", outside)
+    with pytest.raises(OSError, match="symlink or leaves the project"):
+        H.write_handoff_file(_h(), proj)
+    assert list(outside.iterdir()) == [] and _temp_leftovers(tmp_path) == []
+
+    # un enlace que apunta adentro del proyecto tampoco se sigue
+    inside = proj / "elsewhere"
+    inside.mkdir()
+    (proj / ".claude-continuity").unlink()
+    _symlink_dir_or_skip(proj / ".claude-continuity", inside)
+    with pytest.raises(OSError, match="symlink or leaves the project"):
+        H.write_handoff_file(_h(), proj)
+    assert list(inside.iterdir()) == []
+
+    # un enlace roto tampoco
+    (proj / ".claude-continuity").unlink()
+    _symlink_dir_or_skip(proj / ".claude-continuity", tmp_path / "gone")
+    with pytest.raises(OSError, match="symlink or leaves the project"):
+        H.write_handoff_file(_h(), proj)
+    assert not (tmp_path / "gone").exists()
+
+
+def test_write_handoff_file_still_works_in_a_normal_folder(tmp_path):
+    proj = _project(tmp_path)
+    path = H.write_handoff_file(_h(), proj)
+    assert path == proj / ".claude-continuity" / "HANDOFF.md" and path.is_file()
+    assert H.write_handoff_file(_h(), proj) == path  # y con la carpeta ya creada
+    # la raíz misma puede llegar por un enlace (el /tmp de macOS, una carpeta del usuario): eso sí vale
+    via = tmp_path / "via"
+    _symlink_dir_or_skip(via, proj)
+    assert H.write_handoff_file(_h(), via) == via / ".claude-continuity" / "HANDOFF.md"
+    assert (proj / ".claude-continuity" / "HANDOFF.md").is_file()
+
+
+def test_capture_with_a_symlinked_folder_saves_the_checkpoint_but_writes_nothing_outside(tmp_path):
+    proj, outside, home = _project(tmp_path), tmp_path / "outside", tmp_path / "home"
+    outside.mkdir()
+    _symlink_dir_or_skip(proj / ".claude-continuity", outside)
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    with pytest.raises(OSError):
+        H.capture(t, proj, "sid-1", "rate_limit", home, write_file=True)
+    assert list(outside.iterdir()) == []
+    assert (home / "checkpoints" / "autosave-sid-1.json").is_file()  # el checkpoint es lo primero que se guarda
+
+
+def test_hook_ignores_a_symlinked_folder_silently_and_writes_nothing_outside(tmp_path):
+    proj, outside, home = _project(tmp_path), tmp_path / "outside", tmp_path / "home"
+    outside.mkdir()
+    _symlink_dir_or_skip(proj / ".claude-continuity", outside)
+    t = _transcript(tmp_path / "s.jsonl", ["fix the refresh flow"], last_text="done")
+    _assert_silent(_run_autosave(_stop_event("StopFailure", "sid-1", t, proj, error="rate_limit"), home))
+    assert list(outside.iterdir()) == []
+    assert (home / "checkpoints" / "autosave-sid-1.json").is_file()
+
+
+def test_cli_refuses_a_symlinked_folder_and_exits_3(tmp_path, monkeypatch, capsys):
+    proj, home = _two_sessions(tmp_path, monkeypatch)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _symlink_dir_or_skip(proj / ".claude-continuity", outside)
+    assert H_CLI.main(["--project", str(proj), "--home", str(home), "--write"]) == 3
+    out, err = capsys.readouterr()
+    assert out.startswith("You are taking over") and "Could not save the handoff" in err
+    assert list(outside.iterdir()) == []
+
+
 def test_hook_stays_silent_even_when_a_library_logs_a_warning(tmp_path):
     # un archivo de reglas corrupto hace que rules.load_rules registre un warning; el logger de último
     # recurso de Python lo imprimiría en stderr y se rompería la regla de "ni stdout ni stderr"
