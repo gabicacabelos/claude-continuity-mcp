@@ -2,12 +2,18 @@
 
 [![tests](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/gabicacabelos/claude-continuity-mcp/actions/workflows/tests.yml)
 
-▶ **[Watch the 22-second presentation](docs/media/presentation.mp4)** (video, in Spanish)
+<p align="center">
+  <a href="docs/media/presentation.mp4"><img src="docs/media/presentation.gif" alt="Claude Continuity: 22-second animated presentation (click for the video with sound)" width="420"></a>
+</p>
 
 **Your agents stop waiting for you to carry messages.** Claude Code hands a task to Antigravity, goes idle, and wakes up
 by itself the moment the reply lands. And they all share one project memory that survives `/compact` and new sessions.
 
 An MCP server that gives Claude something it doesn't have today: **memory that persists across sessions and is shared across all its clients** (Code, Desktop, Cowork, and — bridged, see below — Design). It remembers which files you already read and returns only the diffs, resumes tasks where you left off, and coordinates orders between clients. 100% local and deterministic at its core, no API keys — the one exception is the Design bridge, which needs Google Drive since Design has no local access.
+
+▶ **Presentation video** (22 s, in Spanish, with sound):
+
+https://github.com/user-attachments/assets/fbd40a9f-42fa-4866-9ee3-8902cb4caa3a
 
 ## The live inbox: hand off, go idle, wake up
 
